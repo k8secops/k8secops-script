@@ -52,32 +52,13 @@ error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 section() { echo -e "\n${CYAN}── $* ──${NC}"; }
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
-AUTO_YES=false
 for arg in "$@"; do
   case "$arg" in
-    --yes|-y) AUTO_YES=true ;;
     --help|-h)
       sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0 ;;
   esac
 done
-
-ask() {
-  local prompt="$1" default="$2" varname="$3" input
-  if [[ -n "${!varname:-}" ]]; then return 0; fi
-  if [[ "$AUTO_YES" == "true" ]]; then printf -v "$varname" '%s' "$default"; return 0; fi
-  if [[ -n "$default" ]]; then read -rp "  ${prompt} [${default}]: " input; input="${input:-$default}"
-  else read -rp "  ${prompt}: " input; fi
-  printf -v "$varname" '%s' "$input"
-}
-
-ask_secret() {
-  local prompt="$1" varname="$2" input
-  if [[ -n "${!varname:-}" ]]; then return 0; fi
-  if [[ "$AUTO_YES" == "true" ]]; then printf -v "$varname" '%s' ""; return 0; fi
-  read -rsp "  ${prompt}: " input; echo
-  printf -v "$varname" '%s' "$input"
-}
 
 gen_token() {
   if command -v openssl &>/dev/null; then openssl rand -hex 32
@@ -109,36 +90,22 @@ info "Cluster: ${CONTEXT}"
 info "Chart  : ${CHART_OCI}:${CHART_VERSION}"
 
 echo ""
-# When piped through bash (curl | bash) stdin is not a TTY — skip the prompt
-# and proceed automatically. Only ask when running interactively.
-if [[ "$AUTO_YES" != "true" ]] && [[ -t 0 ]]; then
-  read -rp "  Proceed? [y/N]: " _yn
-  [[ "${_yn,,}" == "y" ]] || { echo "Aborted."; exit 0; }
-fi
 
-# ── Credentials ──────────────────────────────────────────────────────────────
-section "Credentials"
+# ── Credentials — all auto-generated, printed at end ─────────────────────────
+section "Generating credentials"
 
+# Reuse existing secrets if this is a re-install, otherwise generate fresh ones
 EXISTING_TOKEN=$(kubectl get secret gitops-platform-secrets -n "${NS_CORE}" \
   -o jsonpath='{.data.operatorApiToken}' 2>/dev/null | base64 -d 2>/dev/null || true)
-
-if [[ -n "$EXISTING_TOKEN" && "$AUTO_YES" == "true" ]]; then
-  OPERATOR_API_TOKEN="$EXISTING_TOKEN"
-  info "Reusing existing OPERATOR_API_TOKEN"
-else
-  [[ -z "${OPERATOR_API_TOKEN:-}" ]] && OPERATOR_API_TOKEN="$(gen_token)"
-fi
-
-ask "UI admin username" "admin" UI_ADMIN_USERNAME
-
 EXISTING_UI_PASSWORD=$(kubectl get secret gitops-platform-secrets -n "${NS_CORE}" \
   -o jsonpath='{.data.uiAdminPassword}' 2>/dev/null | base64 -d 2>/dev/null || true)
-if [[ -z "${UI_ADMIN_PASSWORD:-}" ]]; then
-  UI_ADMIN_PASSWORD="${EXISTING_UI_PASSWORD:-$(gen_token | head -c 16)}"
-fi
 
-ask_secret "SonarQube admin password (default 'admin' if blank)" SONARQUBE_PASSWORD
-SONARQUBE_PASSWORD="${SONARQUBE_PASSWORD:-admin}"
+UI_ADMIN_USERNAME="admin"
+OPERATOR_API_TOKEN="${EXISTING_TOKEN:-$(gen_token)}"
+UI_ADMIN_PASSWORD="${EXISTING_UI_PASSWORD:-$(gen_token | head -c 16)}"
+SONARQUBE_PASSWORD="$(gen_token | head -c 16)"   # internal only — not shown to user
+
+info "Credentials ready (printed at end of install)"
 
 # ── Step 1: Namespaces ───────────────────────────────────────────────────────
 section "Step 1 — Namespaces"
@@ -156,31 +123,8 @@ kubectl label namespace "$NS_TOOLING" \
 
 info "Pod Security labels applied"
 
-# ── Step 2: Tekton Pipelines ─────────────────────────────────────────────────
-section "Step 2 — Tekton Pipelines ${TEKTON_VERSION}"
-
-CURRENT_TEKTON=$(kubectl get deployment tekton-pipelines-controller \
-  -n "$NS_TEKTON" \
-  -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "")
-
-if echo "$CURRENT_TEKTON" | grep -q "$TEKTON_VERSION"; then
-  info "Tekton ${TEKTON_VERSION} already installed"
-else
-  info "Installing Tekton ${TEKTON_VERSION}..."
-  kubectl apply -f "https://github.com/tektoncd/pipeline/releases/download/${TEKTON_VERSION}/release.yaml"
-  kubectl rollout status deployment/tekton-pipelines-controller -n "$NS_TEKTON" --timeout=300s
-  info "Tekton ready"
-fi
-
-kubectl label namespace "$NS_TEKTON" \
-  pod-security.kubernetes.io/enforce=privileged \
-  pod-security.kubernetes.io/enforce-version=latest \
-  --overwrite >/dev/null
-kubectl patch configmap feature-flags -n "$NS_TEKTON" \
-  --type merge -p '{"data":{"set-security-context":"true"}}' >/dev/null 2>&1 || true
-
-# ── Step 3: Sealed Secrets ───────────────────────────────────────────────────
-section "Step 3 — Sealed Secrets ${SEALED_SECRETS_VERSION}"
+# ── Step 2: Sealed Secrets ───────────────────────────────────────────────────
+section "Step 2 — Sealed Secrets ${SEALED_SECRETS_VERSION}"
 
 helm repo add sealed-secrets https://bitnami-labs.github.io/sealed-secrets >/dev/null 2>&1 || true
 helm repo update >/dev/null
@@ -194,7 +138,7 @@ helm upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
 info "Sealed Secrets installed"
 
 # ── Step 4: Helm install from OCI ────────────────────────────────────────────
-section "Step 4 — Installing GitOps Platform v${CHART_VERSION} from OCI"
+section "Step 3 — Installing GitOps Platform v${CHART_VERSION} from OCI"
 
 TMP_VALUES=$(mktemp)
 trap 'rm -f "${TMP_VALUES}"' EXIT
@@ -219,14 +163,14 @@ helm upgrade --install gitops-platform "${CHART_OCI}" \
 info "Helm chart installed"
 
 # ── Step 5: Apply Tekton security scanner tasks ───────────────────────────────
-section "Step 5 — Applying 30+ security scanner tasks"
+section "Step 4 — Applying 30+ security scanner tasks"
 
 info "Downloading from: ${TEKTON_TASKS_URL}"
 kubectl apply -n "$NS_TEKTON" -f "${TEKTON_TASKS_URL}"
 info "Scanner tasks applied"
 
 # ── Step 6: Wait for all pods ─────────────────────────────────────────────────
-section "Step 6 — Waiting for all pods to be Running and Ready"
+section "Step 5 — Waiting for all pods to be Running and Ready"
 
 wait_ns() {
   local ns="$1" timeout="${2:-300}" elapsed=0 total ready lines
