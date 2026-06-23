@@ -32,7 +32,8 @@ set -euo pipefail
 # ── Published locations — update these after hosting dist/ files ────────────
 CHART_OCI="oci://registry-1.docker.io/k8secops/gitops-platform"
 CHART_VERSION="1.0.0"
-TEKTON_TASKS_URL="https://raw.githubusercontent.com/k8secops/gitops-platform-public/main/tekton-tasks.yaml"
+TEKTON_TASKS_URL="https://raw.githubusercontent.com/k8secops/k8secops-script/main/tekton-tasks.yaml"
+
 
 # ── Platform versions ────────────────────────────────────────────────────────
 SEALED_SECRETS_VERSION="2.15.0"
