@@ -117,7 +117,7 @@ The platform runs as a **free trial**. The trial expiry date is baked into the o
 
 ### Purchase a license
 
-Contact **sales@k8secops.io** to purchase a license. You will receive an updated operator image with an extended expiry date. Your existing data is fully preserved — swap the image and restart the operator.
+Contact **k8secops@gmail.com** to purchase a license. You will receive an updated operator image with an extended expiry date. Your existing data is fully preserved — swap the image and restart the operator.
 
 ---
 
