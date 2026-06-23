@@ -80,6 +80,7 @@ UI_ADMIN_USERNAME="admin"
 OPERATOR_API_TOKEN="${EXISTING_TOKEN:-$(gen_token)}"
 UI_ADMIN_PASSWORD="${EXISTING_UI_PWD:-$(gen_token | head -c 16)}"
 SONARQUBE_PASSWORD="$(gen_token | head -c 16)"
+DB_PASSWORD="$(gen_token | head -c 24)"
 
 info "Credentials generated (printed at end)"
 
@@ -156,6 +157,9 @@ ui:
     password: '$(yesc "${UI_ADMIN_PASSWORD}")'
 sonarqube:
   adminPassword: '$(yesc "${SONARQUBE_PASSWORD}")'
+database:
+  internal:
+    password: '$(yesc "${DB_PASSWORD}")'
 tekton:
   enabled: false
 EOF
