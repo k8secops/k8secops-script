@@ -1,5 +1,5 @@
 # Source: platform/tekton/tasks/git/git-clone-task.yaml
-﻿---
+---
 # git-clone Task â€” replaces the deprecated ClusterTask of the same name.
 # Tekton v0.54+ removed ClusterTask; this Task must live in tekton-pipelines.
 # API surface is kept compatible with the Tekton Hub git-clone 0.9 task so the
@@ -98,7 +98,7 @@ spec:
         echo "Cloned $(params.url) @ $(params.revision) -> $RESULT_SHA"
 
 # Source: platform/tekton/tasks/secrets/secrets-scan.yaml
-﻿---
+---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -238,7 +238,7 @@ spec:
         fi
 
 # Source: platform/tekton/tasks/sast/checkov-task.yaml
-﻿---
+---
 # â”€â”€ Checkov â€” IaC security scanner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Scans Dockerfiles and Kubernetes manifests for misconfigurations,
 # hardcoded secrets, insecure defaults, and CIS benchmark violations.
@@ -326,7 +326,7 @@ spec:
         echo "Report: iac/$(params.output-name).sarif"
 
 # Source: platform/tekton/tasks/sast/sast-tasks.yaml
-﻿---
+---
 # â”€â”€ Semgrep â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 apiVersion: tekton.dev/v1
 kind: Task
@@ -1243,7 +1243,7 @@ spec:
         echo "Roslyn Security: $COUNT findings"
 
 # Source: platform/tekton/tasks/sca/sca-tasks.yaml
-﻿---
+---
 # â”€â”€ OWASP Dependency-Check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 apiVersion: tekton.dev/v1
 kind: Task
@@ -1379,7 +1379,7 @@ spec:
         echo "Report: sca/osv.json  ($SIZE, $COUNT vulns)  |  sca/osv.sarif"
 
 # Source: platform/tekton/tasks/tests/unit-test-tasks.yaml
-﻿---
+---
 # â”€â”€ Java Unit Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 apiVersion: tekton.dev/v1
 kind: Task
@@ -2198,7 +2198,7 @@ spec:
         print("Unit test dispatcher: operator should patch this task")
 
 # Source: platform/tekton/tasks/build/build-scan-push-tasks.yaml
-﻿---
+---
 # â”€â”€ Build image locally â€” NO push â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 apiVersion: tekton.dev/v1
 kind: Task
@@ -3321,7 +3321,7 @@ spec:
             print(f"Status notify failed: {e}")
 
 # Source: platform/tekton/tasks/build/compile-dotnet-task.yaml
-﻿---
+---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -3486,7 +3486,7 @@ spec:
         echo "â”€â”€ .NET compile complete â”€â”€"
 
 # Source: platform/tekton/tasks/build/compile-go-task.yaml
-﻿---
+---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -3545,7 +3545,7 @@ spec:
         echo "â”€â”€ Go compile complete â”€â”€"
 
 # Source: platform/tekton/tasks/build/compile-java-task.yaml
-﻿---
+---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -3632,7 +3632,7 @@ spec:
         echo "â”€â”€ Java compile complete â”€â”€"
 
 # Source: platform/tekton/tasks/build/compile-nodejs-task.yaml
-﻿---
+---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -3703,7 +3703,7 @@ spec:
         echo "â”€â”€ Node.js compile complete â”€â”€"
 
 # Source: platform/tekton/tasks/build/compile-python-task.yaml
-﻿---
+---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -3794,7 +3794,7 @@ spec:
         echo "â”€â”€ Python compile complete â”€â”€"
 
 # Source: platform/tekton/tasks/build/compile-task.yaml
-﻿---
+---
 # â”€â”€ Language Compile Task â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Compiles application source into artifacts (JAR/WAR/dist) before tests.
 # Results are written to the shared `source` workspace so unit-tests and
@@ -3912,7 +3912,7 @@ spec:
         echo "â”€â”€ Compile stage complete â”€â”€"
 
 # Source: platform/tekton/tasks/build/malware-scan.yaml
-﻿---
+---
 # â”€â”€ ClamAV malware scan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Scans the locally built image tar for malware before push.
 # Step 1: freshclam updates virus definitions into the results
@@ -4008,7 +4008,7 @@ spec:
         fi
 
 # Source: platform/tekton/tasks/ai/ai-aggregate.yaml
-﻿---
+---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -4453,7 +4453,7 @@ spec:
         print(f"Recommendation: {rec}")
 
 # Source: platform/tekton/tasks/ai/ai-analyze-image.yaml
-﻿---
+---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -4714,7 +4714,7 @@ spec:
         print(f"Image analysis written: verdict={result['verdict']}, findings={len(result['findings'])}")
 
 # Source: platform/tekton/tasks/ai/ai-analyze-sast.yaml
-﻿---
+---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -5005,7 +5005,7 @@ spec:
         print(f"SAST analysis written: verdict={result['verdict']}, findings={len(result['findings'])}")
 
 # Source: platform/tekton/tasks/ai/ai-analyze-sca.yaml
-﻿---
+---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -5251,7 +5251,7 @@ spec:
         print(f"SCA analysis written: verdict={result['verdict']}, findings={len(result['findings'])}")
 
 # Source: platform/tekton/tasks/ai/ai-analyze-secrets.yaml
-﻿---
+---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -5496,7 +5496,7 @@ spec:
         print(f"Secrets analysis written: verdict={result['verdict']}, findings={len(result['findings'])}")
 
 # Source: platform/tekton/tasks/ai/ai-analyze-tests.yaml
-﻿---
+---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
