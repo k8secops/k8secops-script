@@ -51,14 +51,18 @@ Open **http://localhost:8080** and log in with:
 | **Username** | `admin` |
 | **Password** | `admin` |
 
-> Change your password immediately after first login via **Profile → Change password** (top-right menu).
+> **Change your password after first login** via **Profile → Change password** (top-right menu).
 
-### Set a custom password before installing
+### Want a different password from the start?
+
+Set `UI_ADMIN_PASSWORD` before running the install command:
 
 ```bash
 UI_ADMIN_PASSWORD=mysecurepassword \
   curl -sfL https://raw.githubusercontent.com/k8secops/k8secops-script/main/customer-install.sh | bash
 ```
+
+If you do not set it, the default is `admin`. You can always change it later from the Profile menu.
 
 ### Retrieve credentials at any time
 
