@@ -75,6 +75,10 @@ EXISTING_TOKEN=$(kubectl get secret gitops-platform-secrets -n "${NS_CORE}" \
   -o jsonpath='{.data.operatorApiToken}' 2>/dev/null | base64 -d 2>/dev/null || true)
 EXISTING_UI_PWD=$(kubectl get secret gitops-platform-secrets -n "${NS_CORE}" \
   -o jsonpath='{.data.uiAdminPassword}' 2>/dev/null | base64 -d 2>/dev/null || true)
+# Reuse existing DB password — PostgreSQL data directory is initialised with it;
+# using a new password on re-install causes "password authentication failed".
+EXISTING_DB_PWD=$(kubectl get secret gitops-db-internal -n gitops-db \
+  -o jsonpath='{.data.POSTGRES_PASSWORD}' 2>/dev/null | base64 -d 2>/dev/null || true)
 
 UI_ADMIN_USERNAME="admin"
 OPERATOR_API_TOKEN="${EXISTING_TOKEN:-$(gen_token)}"
@@ -82,7 +86,7 @@ OPERATOR_API_TOKEN="${EXISTING_TOKEN:-$(gen_token)}"
 # Override before install: UI_ADMIN_PASSWORD=mypassword curl -sfL .../customer-install.sh | bash
 UI_ADMIN_PASSWORD="${UI_ADMIN_PASSWORD:-${EXISTING_UI_PWD:-admin}}"
 SONARQUBE_PASSWORD="$(gen_token | head -c 16)"
-DB_PASSWORD="$(gen_token | head -c 24)"
+DB_PASSWORD="${EXISTING_DB_PWD:-$(gen_token | head -c 24)}"
 
 info "Credentials generated (printed at end)"
 
@@ -126,8 +130,22 @@ kubectl label namespace "$NS_TEKTON" \
   pod-security.kubernetes.io/enforce=privileged \
   pod-security.kubernetes.io/enforce-version=latest \
   --overwrite >/dev/null
+
+# Configure Tekton feature flags:
+#   set-security-context=true     — lets Tekton inject security contexts into its own sidecars
+#   disable-affinity-assistant    — required for pipelines that use multiple PVC-backed workspaces
+#                                   (source, results, cache, image-tar). Without this Tekton
+#                                   raises "more than one PersistentVolumeClaim is bound".
 kubectl patch configmap feature-flags -n "$NS_TEKTON" \
-  --type merge -p '{"data":{"set-security-context":"true"}}' >/dev/null 2>&1 || true
+  --type merge \
+  -p '{"data":{"set-security-context":"true","disable-affinity-assistant":"true"}}' >/dev/null
+
+# Restart the controller so it picks up the new feature flags immediately.
+# The configmap is read at startup — patching alone is not enough.
+kubectl rollout restart deployment/tekton-pipelines-controller -n "$NS_TEKTON" >/dev/null
+kubectl rollout status  deployment/tekton-pipelines-controller -n "$NS_TEKTON" \
+  --timeout=120s >/dev/null
+info "Tekton feature flags applied and controller restarted"
 
 # ── Step 3: Sealed Secrets ────────────────────────────────────────────────────
 section "Step 3 — Sealed Secrets ${SEALED_SECRETS_VERSION}"
