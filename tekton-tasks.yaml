@@ -1,6 +1,6 @@
 # Source: platform/tekton/tasks/git/git-clone-task.yaml
 ---
-# git-clone Task â€” replaces the deprecated ClusterTask of the same name.
+# git-clone Task  replaces the deprecated ClusterTask of the same name.
 # Tekton v0.54+ removed ClusterTask; this Task must live in tekton-pipelines.
 # API surface is kept compatible with the Tekton Hub git-clone 0.9 task so the
 # pipeline's taskRef only needs kind: Task (not ClusterTask).
@@ -130,8 +130,8 @@ spec:
     - name: VERIFIED_COUNT
       type: string
   steps:
-    # â”€â”€ Gitleaks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # Pattern-based scanning â€” catches secrets by regex across entire history.
+    #  Gitleaks 
+    # Pattern-based scanning  catches secrets by regex across entire history.
     # --exit-code 0: findings surface in AI report, not a hard pipeline failure.
     - name: gitleaks
       image: k8secops/k8secops:gitleaks-v8.18.4
@@ -152,7 +152,7 @@ spec:
         mkdir -p $(workspaces.results.path)/secrets
 
         if [ "$(params.run-gitleaks)" != "true" ]; then
-          echo "Gitleaks: disabled for this app â€” skipping"
+          echo "Gitleaks: disabled for this app  skipping"
           echo -n "0" > $(results.LEAK_COUNT.path)
           exit 0
         fi
@@ -175,10 +175,10 @@ spec:
         echo -n "$COUNT" > $(results.LEAK_COUNT.path)
         echo "Gitleaks: $COUNT potential secret(s) found"
         if [ "$COUNT" -gt "0" ]; then
-          echo "WARNING: detected patterns â€” review AI report at human gate"
+          echo "WARNING: detected patterns  review AI report at human gate"
         fi
 
-    # â”€â”€ TruffleHog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  TruffleHog 
     # Entropy analysis + live credential verification. Only verified=true
     # findings (proven real credentials) are counted in VERIFIED_COUNT.
     - name: trufflehog
@@ -195,7 +195,7 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       env:
-        # uid 65532 has no /etc/passwd entry â€” set HOME so git works internally
+        # uid 65532 has no /etc/passwd entry  set HOME so git works internally
         - name: HOME
           value: "$(workspaces.results.path)"
       script: |
@@ -204,7 +204,7 @@ spec:
         mkdir -p $(workspaces.results.path)/secrets
 
         if [ "$(params.run-trufflehog)" != "true" ]; then
-          echo "TruffleHog: disabled for this app â€” skipping"
+          echo "TruffleHog: disabled for this app  skipping"
           echo -n "0" > $(results.VERIFIED_COUNT.path)
           exit 0
         fi
@@ -234,12 +234,12 @@ spec:
         echo -n "$VERIFIED" > $(results.VERIFIED_COUNT.path)
         echo "TruffleHog: $VERIFIED verified (live) secret(s)"
         if [ "$VERIFIED" -gt "0" ]; then
-          echo "CRITICAL: $VERIFIED verified credential(s) found â€” rotate immediately"
+          echo "CRITICAL: $VERIFIED verified credential(s) found  rotate immediately"
         fi
 
 # Source: platform/tekton/tasks/sast/checkov-task.yaml
 ---
-# â”€â”€ Checkov â€” IaC security scanner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Checkov  IaC security scanner 
 # Scans Dockerfiles and Kubernetes manifests for misconfigurations,
 # hardcoded secrets, insecure defaults, and CIS benchmark violations.
 # Required for banking/regulated workloads before production deployment.
@@ -251,7 +251,7 @@ metadata:
   labels:
     gitops-platform.io/stage: sast
 spec:
-  description: "Checkov security scanner â€” parameterised by framework. Apache 2.0. No token."
+  description: "Checkov security scanner  parameterised by framework. Apache 2.0. No token."
   params:
     - name: frameworks
       type: string
@@ -260,7 +260,7 @@ spec:
     - name: output-name
       type: string
       default: "checkov-dockerfile"
-      description: "Output SARIF filename stem â€” must be unique per pipeline task invocation"
+      description: "Output SARIF filename stem  must be unique per pipeline task invocation"
   workspaces:
     - name: source
     - name: results
@@ -291,7 +291,7 @@ spec:
         mkdir -p $(workspaces.results.path)/iac
         OUT="$(workspaces.results.path)/iac/$(params.output-name).sarif"
 
-        echo "â•â• Checkov scan â•â•"
+        echo " Checkov scan "
         echo "  Frameworks: $(params.frameworks)"
         echo "  Directory : $(workspaces.source.path)"
         echo "  Output    : $OUT"
@@ -305,7 +305,7 @@ spec:
           --soft-fail \
           2>/dev/null || true
 
-        # Checkov writes results.sarif â€” rename to the configured output name
+        # Checkov writes results.sarif  rename to the configured output name
         if [ -f "$(workspaces.results.path)/iac/results.sarif" ]; then
           mv "$(workspaces.results.path)/iac/results.sarif" "$OUT"
         else
@@ -327,7 +327,7 @@ spec:
 
 # Source: platform/tekton/tasks/sast/sast-tasks.yaml
 ---
-# â”€â”€ Semgrep â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Semgrep 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -336,7 +336,7 @@ metadata:
   labels:
     gitops-platform.io/stage: sast
 spec:
-  description: "Semgrep SAST â€” OSS rules, all languages, no token."
+  description: "Semgrep SAST  OSS rules, all languages, no token."
   workspaces:
     - name: source
     - name: results
@@ -361,7 +361,7 @@ spec:
       script: |
         #!/bin/sh
         mkdir -p $(workspaces.results.path)/sast
-        # No SEMGREP_APP_TOKEN â€” uses free public rules
+        # No SEMGREP_APP_TOKEN  uses free public rules
         semgrep \
           --config auto \
           --sarif \
@@ -382,7 +382,7 @@ spec:
         echo "Report: sast/semgrep.sarif  ($SIZE, $COUNT findings)"
 
 ---
-# â”€â”€ Bearer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Bearer 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -391,7 +391,7 @@ metadata:
   labels:
     gitops-platform.io/stage: sast
 spec:
-  description: "Bearer SAST â€” security + privacy, Apache 2.0, no token."
+  description: "Bearer SAST  security + privacy, Apache 2.0, no token."
   workspaces:
     - name: source
     - name: results
@@ -439,7 +439,7 @@ spec:
         echo "Report: sast/bearer.sarif  ($SIZE, $COUNT findings)"
 
 ---
-# â”€â”€ SonarQube (Community Edition, in-cluster, no token) â”€â”€â”€
+#  SonarQube (Community Edition, in-cluster, no token) 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -448,7 +448,7 @@ metadata:
   labels:
     gitops-platform.io/stage: sast
 spec:
-  description: "SonarQube CE â€” in-cluster, no external token required."
+  description: "SonarQube CE  in-cluster, no external token required."
   params:
     - name: sonarqube-url
       default: "http://gitops-platform-sonarqube.gitops-tooling.svc.cluster.local:9000"
@@ -498,7 +498,7 @@ spec:
                 print(f"Waiting {i+1}/40: {e}")
             time.sleep(10)
         else:
-            print("SonarQube timeout â€” proceeding without token")
+            print("SonarQube timeout  proceeding without token")
             open("$(workspaces.results.path)/sonar-token", "w").write("")
             sys.exit(0)
 
@@ -517,7 +517,7 @@ spec:
             open("$(workspaces.results.path)/sonar-token", "w").write(token)
             print(f"SonarQube analysis token created: {token_name}")
         except Exception as e:
-            print(f"Token creation failed: {e} â€” scan will be unauthenticated")
+            print(f"Token creation failed: {e}  scan will be unauthenticated")
             open("$(workspaces.results.path)/sonar-token", "w").write("")
 
     - name: sonar-scan
@@ -584,7 +584,7 @@ spec:
 
         scan_status = open(status_file).read().strip() if os.path.exists(status_file) else "unknown"
         if scan_status != "submitted":
-            print(f"Scan did not submit an analysis â€” skipping quality gate check")
+            print(f"Scan did not submit an analysis  skipping quality gate check")
             open(result_path, "w").write("UNKNOWN")
             sys.exit(0)
 
@@ -600,24 +600,24 @@ spec:
                 qg  = d.get("projectStatus", {}).get("status", "UNKNOWN")
                 if qg in ("OK", "ERROR", "WARN"):
                     open(result_path, "w").write(qg)
-                    icon = "âœ“" if qg == "OK" else "âœ—"
+                    icon = "" if qg == "OK" else ""
                     print(f"Quality gate: {qg} {icon}")
                     sys.exit(0)
-                print(f"Attempt {i+1}: status={qg}, waitingâ€¦")
+                print(f"Attempt {i+1}: status={qg}, waiting")
             except urllib.error.HTTPError as e:
                 body = e.read().decode(errors="replace")
                 if e.code == 404:
-                    print(f"Attempt {i+1}: analysis not yet indexed (404) â€” retrying")
+                    print(f"Attempt {i+1}: analysis not yet indexed (404)  retrying")
                 else:
                     print(f"Attempt {i+1}: HTTP {e.code}: {body[:120]}")
             except Exception as e:
                 print(f"Attempt {i+1}: {e}")
             time.sleep(10)
-        print("Quality gate check timed out â€” writing UNKNOWN")
+        print("Quality gate check timed out  writing UNKNOWN")
         open(result_path, "w").write("UNKNOWN")
 
 ---
-# â”€â”€ SonarQube for .NET (dotnet-sonarscanner, in-cluster) â”€â”€
+#  SonarQube for .NET (dotnet-sonarscanner, in-cluster) 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -626,7 +626,7 @@ metadata:
   labels:
     gitops-platform.io/stage: sast
 spec:
-  description: "SonarQube CE for .NET via dotnet-sonarscanner â€” in-cluster, no external token required."
+  description: "SonarQube CE for .NET via dotnet-sonarscanner  in-cluster, no external token required."
   params:
     - name: sonarqube-url
       default: "http://gitops-platform-sonarqube.gitops-tooling.svc.cluster.local:9000"
@@ -680,7 +680,7 @@ spec:
                 print(f"Waiting {i+1}/40: {e}")
             time.sleep(10)
         else:
-            print("SonarQube timeout â€” proceeding without token")
+            print("SonarQube timeout  proceeding without token")
             open("$(workspaces.results.path)/sonar-token", "w").write("")
             sys.exit(0)
 
@@ -699,7 +699,7 @@ spec:
             open("$(workspaces.results.path)/sonar-token", "w").write(token)
             print(f"SonarQube analysis token created: {token_name}")
         except Exception as e:
-            print(f"Token creation failed: {e} â€” scan will be unauthenticated")
+            print(f"Token creation failed: {e}  scan will be unauthenticated")
             open("$(workspaces.results.path)/sonar-token", "w").write("")
 
     - name: sonar-scan
@@ -777,7 +777,7 @@ spec:
 
         scan_status = open(status_file).read().strip() if os.path.exists(status_file) else "unknown"
         if scan_status != "submitted":
-            print(f"Scan did not submit an analysis â€” skipping quality gate check")
+            print(f"Scan did not submit an analysis  skipping quality gate check")
             open(result_path, "w").write("UNKNOWN")
             sys.exit(0)
 
@@ -793,30 +793,30 @@ spec:
                 qg  = d.get("projectStatus", {}).get("status", "UNKNOWN")
                 if qg in ("OK", "ERROR", "WARN"):
                     open(result_path, "w").write(qg)
-                    icon = "âœ“" if qg == "OK" else "âœ—"
+                    icon = "" if qg == "OK" else ""
                     print(f"Quality gate: {qg} {icon}")
                     sys.exit(0)
-                print(f"Attempt {i+1}: status={qg}, waitingâ€¦")
+                print(f"Attempt {i+1}: status={qg}, waiting")
             except urllib.error.HTTPError as e:
                 body = e.read().decode(errors="replace")
                 if e.code == 404:
-                    print(f"Attempt {i+1}: analysis not yet indexed (404) â€” retrying")
+                    print(f"Attempt {i+1}: analysis not yet indexed (404)  retrying")
                 else:
                     print(f"Attempt {i+1}: HTTP {e.code}: {body[:120]}")
             except Exception as e:
                 print(f"Attempt {i+1}: {e}")
             time.sleep(10)
-        print("Quality gate check timed out â€” writing UNKNOWN")
+        print("Quality gate check timed out  writing UNKNOWN")
         open(result_path, "w").write("UNKNOWN")
 
 ---
-# â”€â”€ Language-specific SAST dispatcher â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Language-specific SAST dispatcher 
 # The operator replaces this task ref with the correct one per language:
-#   java   â†’ gitops-sast-spotbugs
-#   python â†’ gitops-sast-bandit
-#   nodejs â†’ gitops-sast-eslint-security
-#   go     â†’ gitops-sast-gosec
-#   dotnet â†’ gitops-sast-roslyn
+#   java    gitops-sast-spotbugs
+#   python  gitops-sast-bandit
+#   nodejs  gitops-sast-eslint-security
+#   go      gitops-sast-gosec
+#   dotnet  gitops-sast-roslyn
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -861,7 +861,7 @@ spec:
         print("Language SAST: using fallback (operator should patch this)")
 
 ---
-# â”€â”€ Bandit (Python) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Bandit (Python) 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -921,7 +921,7 @@ spec:
         echo "Report: sast/bandit.sarif  ($SIZE, $COUNT findings)"
 
 ---
-# â”€â”€ gosec (Go) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  gosec (Go) 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -980,7 +980,7 @@ spec:
         echo "Report: sast/gosec.sarif  ($SIZE, $COUNT findings)"
 
 ---
-# â”€â”€ ESLint Security (Node.js) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  ESLint Security (Node.js) 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -1056,7 +1056,7 @@ spec:
         echo "Report: sast/eslint.json  ($SIZE, $COUNT findings)"
 
 ---
-# â”€â”€ SpotBugs (Java) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  SpotBugs (Java) 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -1103,7 +1103,7 @@ spec:
         CACHE="/tmp/spotbugs-cache"
         mkdir -p "$RESULTS" "$CACHE"
 
-        # Compile â€” skip tests, quiet
+        # Compile  skip tests, quiet
         BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
         if [ "$BUILD_TOOL" = "maven" ]; then
@@ -1112,7 +1112,7 @@ spec:
             EXTRA="-f $BUILD_FILE"
           fi
           mvn compile -DskipTests -B -q $EXTRA 2>&1 || {
-            echo "Maven compile failed â€” skipping SpotBugs"
+            echo "Maven compile failed  skipping SpotBugs"
             echo -n "0" > $(results.FINDING_COUNT.path)
             exit 0
           }
@@ -1123,7 +1123,7 @@ spec:
             EXTRA="-b $BUILD_FILE"
           fi
           ./gradlew classes -q $EXTRA 2>&1 || {
-            echo "Gradle classes failed â€” skipping SpotBugs"
+            echo "Gradle classes failed  skipping SpotBugs"
             echo -n "0" > $(results.FINDING_COUNT.path)
             exit 0
           }
@@ -1131,7 +1131,7 @@ spec:
         fi
 
         if [ -z "$CLASS_DIRS" ]; then
-          echo "No compiled classes found â€” skipping SpotBugs"
+          echo "No compiled classes found  skipping SpotBugs"
           echo -n "0" > $(results.FINDING_COUNT.path)
           exit 0
         fi
@@ -1165,7 +1165,7 @@ spec:
         echo "Report: sast/spotbugs.xml  ($SIZE, $COUNT findings)"
 
 ---
-# â”€â”€ Roslyn Security (.NET) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Roslyn Security (.NET) 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -1244,7 +1244,7 @@ spec:
 
 # Source: platform/tekton/tasks/sca/sca-tasks.yaml
 ---
-# â”€â”€ OWASP Dependency-Check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  OWASP Dependency-Check 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -1298,7 +1298,7 @@ spec:
             --disableYarnAudit \
             --disableNodeAudit \
           2>&1 | tail -5 \
-        || echo "OWASP: scan skipped (database absent or timeout) â€” OSV-Scanner covers dependency CVEs"
+        || echo "OWASP: scan skipped (database absent or timeout)  OSV-Scanner covers dependency CVEs"
 
         COUNT=$(python3 -c "
         import json, glob
@@ -1319,12 +1319,12 @@ spec:
           SIZE=$(du -sh "$REPORT" 2>/dev/null | cut -f1 || echo "?")
           echo "Report: sca/dependency-check-report.json  ($SIZE, $COUNT vulns)"
         else
-          echo "Report: none (database not available â€” re-run with NVD database seeded)"
+          echo "Report: none (database not available  re-run with NVD database seeded)"
         fi
         exit 0
 
 ---
-# â”€â”€ OSV-Scanner (Google) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  OSV-Scanner (Google) 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -1380,7 +1380,7 @@ spec:
 
 # Source: platform/tekton/tasks/tests/unit-test-tasks.yaml
 ---
-# â”€â”€ Java Unit Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Java Unit Tests 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -1547,7 +1547,7 @@ spec:
         print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 ---
-# â”€â”€ Python Unit Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Python Unit Tests 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -1688,7 +1688,7 @@ spec:
         print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 ---
-# â”€â”€ Node.js Unit Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Node.js Unit Tests 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -1747,7 +1747,7 @@ spec:
 
         mkdir -p $(workspaces.results.path)/tests
 
-        # Run using configured test script (default: test â†’ npm run test / yarn test)
+        # Run using configured test script (default: test  npm run test / yarn test)
         TEST_SCRIPT="$(params.test-script)"
         TEST_SCRIPT="${TEST_SCRIPT:-test}"
         ${BUILD_TOOL} run "$TEST_SCRIPT" -- \
@@ -1828,7 +1828,7 @@ spec:
         print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 ---
-# â”€â”€ .NET Unit Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  .NET Unit Tests 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -1879,7 +1879,7 @@ spec:
           type: RuntimeDefault
       env:
         # Use 65532 to match compile-dotnet (same user owns workspace files).
-        # 65532 has no /etc/passwd entry â€” redirect dotnet/nuget dirs to results workspace.
+        # 65532 has no /etc/passwd entry  redirect dotnet/nuget dirs to results workspace.
         - name: HOME
           value: "$(workspaces.results.path)/.dotnet-home"
         - name: DOTNET_CLI_HOME
@@ -1909,7 +1909,7 @@ spec:
           "$TEST_FILE" 2>&1 || true
         find $(workspaces.results.path)/tests -name "coverage.cobertura.xml" \
           -exec cp {} $(workspaces.results.path)/tests/coverage.cobertura.xml \; 2>/dev/null || true
-        # Remove test-build artifacts only within the project directory â€” not the
+        # Remove test-build artifacts only within the project directory  not the
         # whole workspace, which would catch .sonarqube/bin/ owned by another user.
         BUILD_FILE="$(params.build-file)"
         if [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "." ]; then
@@ -2001,7 +2001,7 @@ spec:
         print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 ---
-# â”€â”€ Go Unit Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Go Unit Tests 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -2046,7 +2046,7 @@ spec:
       env:
         # uid 1000 has no /etc/passwd entry, so $HOME is empty and
         # `go install`/the module cache have nowhere writable to land.
-        # `apk add` also requires root, so python3 can't be installed â€”
+        # `apk add` also requires root, so python3 can't be installed 
         # results are parsed with awk/grep instead.
         - name: HOME
           value: "$(workspaces.results.path)/.go-home"
@@ -2143,7 +2143,7 @@ spec:
         print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 ---
-# â”€â”€ Unit Tests dispatcher (operator patches per language) â”€â”€
+#  Unit Tests dispatcher (operator patches per language) 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -2153,7 +2153,7 @@ metadata:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/role: dispatcher
 spec:
-  description: "Dispatcher â€” operator patches taskRef to language-specific task."
+  description: "Dispatcher  operator patches taskRef to language-specific task."
   params:
     - name: language
       type: string
@@ -2191,7 +2191,7 @@ spec:
           type: RuntimeDefault
       script: |
         #!/usr/bin/env python3
-        # Operator patches this taskRef â€” this is the fallback
+        # Operator patches this taskRef  this is the fallback
         open("$(results.TESTS_PASSED.path)","w").write("0")
         open("$(results.TESTS_FAILED.path)","w").write("0")
         open("$(results.COVERAGE_PCT.path)","w").write("0")
@@ -2199,7 +2199,7 @@ spec:
 
 # Source: platform/tekton/tasks/build/build-scan-push-tasks.yaml
 ---
-# â”€â”€ Build image locally â€” NO push â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Build image locally  NO push 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -2249,7 +2249,7 @@ spec:
     - name: IMAGE_TAR_PATH
     - name: IMAGE_FULL_REF
   steps:
-    # â”€â”€ Step 1: Verify artifacts from compile stage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 1: Verify artifacts from compile stage 
     # The dedicated compile stage (gitops-lang-compile) already ran mvn package
     # before this task. We just confirm the artifacts are present so Kaniko
     # doesn't silently build a broken image.
@@ -2277,10 +2277,10 @@ spec:
                     if ".m2" not in str(p) and "test-classes" not in str(p)
                     and "original-" not in p.name]
             if not jars:
-                print("ERROR: No JAR found â€” compile stage may have failed.")
+                print("ERROR: No JAR found  compile stage may have failed.")
                 print("       Expected mvn/gradle artifacts in target/ or build/libs/")
                 sys.exit(1)
-            print("â”€â”€ Build artifacts ready for Kaniko: â”€â”€")
+            print(" Build artifacts ready for Kaniko: ")
             for j in sorted(jars):
                 size_kb = j.stat().st_size // 1024
                 print(f"  {size_kb} KB  {j.relative_to(source_dir)}")
@@ -2289,13 +2289,13 @@ spec:
             build = source_dir / "build"
             if not dist.exists() and not build.exists():
                 print("WARN: No dist/ or build/ directory found for npm project")
-                print("      Kaniko will include full source â€” ensure Dockerfile handles this")
+                print("      Kaniko will include full source  ensure Dockerfile handles this")
             else:
-                print("â”€â”€ npm build output ready â”€â”€")
+                print(" npm build output ready ")
         else:
-            print(f"â”€â”€ build-tool={build_tool}: artifacts managed by Dockerfile â”€â”€")
+            print(f" build-tool={build_tool}: artifacts managed by Dockerfile ")
 
-    # â”€â”€ Step 2: Validate Dockerfile COPY instructions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 2: Validate Dockerfile COPY instructions 
     # Parses the Dockerfile, finds every COPY source, checks it exists.
     # Fails with a clear message if sources are missing so Kaniko doesn't
     # produce a silently broken image.
@@ -2319,7 +2319,7 @@ spec:
         df_rel     = "$(params.dockerfile-path)".lstrip("./")
         df_path    = source_dir / df_rel if df_rel else source_dir / "Dockerfile"
 
-        # â”€â”€ Generate a default Dockerfile if the repo doesn't ship one â”€â”€â”€â”€â”€â”€
+        #  Generate a default Dockerfile if the repo doesn't ship one 
         # Sample/demo repos for non-Java languages often have no Dockerfile.
         # A generic single-stage Dockerfile lets Kaniko produce a buildable
         # image without requiring the repo to be containerized.
@@ -2341,13 +2341,13 @@ spec:
         if not df_path.exists():
             default = DEFAULT_DOCKERFILES.get("$(params.language)")
             if default:
-                print(f"No Dockerfile at {df_path} â€” generating a default for language=$(params.language)")
+                print(f"No Dockerfile at {df_path}  generating a default for language=$(params.language)")
                 df_path.write_text(default)
             else:
                 print(f"ERROR: Dockerfile not found at {df_path}")
                 sys.exit(1)
 
-        print(f"â”€â”€ Dockerfile: {df_path} â”€â”€")
+        print(f" Dockerfile: {df_path} ")
         lines = df_path.read_text().splitlines()
 
         # Detect multi-stage build
@@ -2355,7 +2355,7 @@ spec:
         is_multistage = from_count > 1
         if is_multistage:
             print(f"  Multi-stage build detected ({from_count} FROM stages)")
-            print("  Compile step inside Docker â€” no pre-existing artifacts required.")
+            print("  Compile step inside Docker  no pre-existing artifacts required.")
             # Pipeline compile/test stages leave obj/, bin/, target/, dist/ etc. in the
             # source workspace. These get picked up by COPY . . and can conflict with
             # the build running inside the Dockerfile. Ensure .dockerignore excludes them.
@@ -2379,7 +2379,7 @@ spec:
             else:
                 print("  .dockerignore already covers build artifact directories")
 
-            # â”€â”€ Diagnostic: list files that will enter the Docker context â”€â”€â”€â”€â”€â”€
+            #  Diagnostic: list files that will enter the Docker context 
             print("\n  Files in Docker context (top 60, excluding known build dirs):")
             skip = {"obj","bin","target","build","dist",".git","node_modules","__pycache__"}
             count = 0
@@ -2397,7 +2397,7 @@ spec:
 
             sys.exit(0)
 
-        print("  Single-stage build â€” checking COPY sources exist in workspace:")
+        print("  Single-stage build  checking COPY sources exist in workspace:")
 
         missing, found = [], []
         for line in lines:
@@ -2420,14 +2420,14 @@ spec:
                     matches = list(source_dir.glob(src_clean))
                     if matches:
                         sizes = [f"{p.stat().st_size//1024}KB  {p.relative_to(source_dir)}" for p in matches[:3]]
-                        found.append(f"  âœ“ {src}  â†’  {', '.join(sizes)}")
+                        found.append(f"   {src}    {', '.join(sizes)}")
                     else:
-                        missing.append(f"  âœ— {src}  (no files match glob)")
+                        missing.append(f"   {src}  (no files match glob)")
                 else:
                     full = source_dir / src_clean
                     if full.exists():
                         size = full.stat().st_size // 1024
-                        found.append(f"  âœ“ {src}  ({size} KB)")
+                        found.append(f"   {src}  ({size} KB)")
                     else:
                         # Suggest closest match
                         name = pathlib.Path(src_clean).name
@@ -2435,8 +2435,8 @@ spec:
                         hint = ""
                         if candidates:
                             rel = candidates[0].relative_to(source_dir)
-                            hint = f"  â†’ did you mean: {rel} ?"
-                        missing.append(f"  âœ— {src}  â€” not found{hint}")
+                            hint = f"   did you mean: {rel} ?"
+                        missing.append(f"   {src}   not found{hint}")
 
         for f in found:
             print(f)
@@ -2448,9 +2448,9 @@ spec:
             print("build output, or use a multi-stage Dockerfile.")
             sys.exit(1)
 
-        print(f"\nAll {len(found)} COPY source(s) verified âœ“")
+        print(f"\nAll {len(found)} COPY source(s) verified ")
 
-    # â”€â”€ Step 2b: Hadolint â€” Dockerfile lint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 2b: Hadolint  Dockerfile lint 
     - name: hadolint
       image: k8secops/k8secops:hadolint-v2.12.0-debian
       workingDir: $(workspaces.source.path)
@@ -2471,7 +2471,7 @@ spec:
         DF="$(workspaces.source.path)/$DF_REL"
         OUT="$(workspaces.results.path)/dockerfile-lint/hadolint.json"
 
-        echo "â•â• Hadolint Dockerfile lint â•â•"
+        echo " Hadolint Dockerfile lint "
         echo "  Dockerfile: $DF"
 
         hadolint "$DF" -f json > "$OUT" 2>/dev/null || true
@@ -2480,9 +2480,9 @@ spec:
         echo "Hadolint findings: ${COUNT:-0}"
         echo "Report: dockerfile-lint/hadolint.json  ($SIZE, ${COUNT:-0} findings)"
 
-    # â”€â”€ Step 3: Kaniko â€” build image and save as Docker archive â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Step 3: Kaniko  build image and save as Docker archive 
     # Kaniko builds Dockerfiles inside a container without Docker daemon or
-    # privileged:true. It unpacks layers into a directory and uses chroot â€”
+    # privileged:true. It unpacks layers into a directory and uses chroot 
     # no overlayfs, no daemon startup race, works under any PSA policy.
     # --snapshot-mode=redo handles .NET multi-stage builds correctly without
     # the nested overlayfs workarounds that BuildKit required.
@@ -2558,7 +2558,7 @@ spec:
         open("$(results.IMAGE_FULL_REF.path)","w").write(full_ref)
         if not os.path.exists(tar_path):
             print(f"ERROR: image tar not found at {tar_path}")
-            print("Kaniko did not write the tar â€” check build-local step logs")
+            print("Kaniko did not write the tar  check build-local step logs")
             sys.exit(1)
         size_mb = os.path.getsize(tar_path) // 1024 // 1024
         print(f"Built image: {full_ref}")
@@ -2583,7 +2583,7 @@ spec:
             print(f"Operator notify failed (non-fatal): {e}")
 
 ---
-# â”€â”€ Trivy â€” scans local tar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Trivy  scans local tar 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -2632,7 +2632,7 @@ spec:
         IMAGE_REF="$(params.image-ref)"
         TAR_SIZE=$(du -sh "$TAR" 2>/dev/null | cut -f1 || echo "?")
 
-        echo "â•â• Trivy image scan â•â•"
+        echo " Trivy image scan "
         echo "  Image : ${IMAGE_REF:-<unknown>}"
         echo "  Tar   : $TAR ($TAR_SIZE)"
         echo "  Rules : $(params.severity)"
@@ -2653,7 +2653,7 @@ spec:
           --scanners vuln,secret,misconfig,license \
           --exit-code 0 2>/dev/null || true
 
-        # Count with grep â€” Trivy Alpine image has no python3
+        # Count with grep  Trivy Alpine image has no python3
         JSON="$(workspaces.results.path)/image-scan/trivy.json"
         CRITICAL=$(grep -o '"Severity":"CRITICAL"' "$JSON" 2>/dev/null | wc -l | tr -d ' ')
         HIGH=$(grep -o '"Severity":"HIGH"' "$JSON" 2>/dev/null | wc -l | tr -d ' ')
@@ -2662,13 +2662,13 @@ spec:
         printf '%s' "$CRITICAL" > $(results.CRITICAL_COUNT.path)
         printf '%s' "$HIGH"     > $(results.HIGH_COUNT.path)
         printf '%s' "$MEDIUM"   > $(results.MEDIUM_COUNT.path)
-        echo "Trivy result â€” CRITICAL=$CRITICAL HIGH=$HIGH MEDIUM=$MEDIUM"
+        echo "Trivy result  CRITICAL=$CRITICAL HIGH=$HIGH MEDIUM=$MEDIUM"
         SIZE=$(du -sh "$(workspaces.results.path)/image-scan/trivy.json" 2>/dev/null | cut -f1 || echo "0B")
         echo "Report: image-scan/trivy.json  ($SIZE, C=$CRITICAL H=$HIGH M=$MEDIUM)"
 
 ---
-# â”€â”€ Grype â€” scans local tar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# anchore/grype:latest is distroless (no /bin/sh) â€” cannot use script:.
+#  Grype  scans local tar 
+# anchore/grype:latest is distroless (no /bin/sh)  cannot use script:.
 # Step 1 creates the output dir (python:3.12-slim).
 # Step 2 runs grype via command/args (no script injection).
 # Step 3 parses JSON results (python:3.12-slim).
@@ -2710,7 +2710,7 @@ spec:
         mkdir -p $(workspaces.vulndb-cache.path)/grype/tmp $(workspaces.vulndb-cache.path)/grype/db
         TAR="$(workspaces.image-tar.path)/image.tar"
         TAR_SIZE=$(du -sh "$TAR" 2>/dev/null | cut -f1 || echo "?")
-        echo "â•â• Grype image scan â•â•"
+        echo " Grype image scan "
         echo "  Image : $(params.image-ref)"
         echo "  Tar   : $TAR ($TAR_SIZE)"
 
@@ -2739,7 +2739,7 @@ spec:
           value: "false"
         - name: GRYPE_DB_CACHE_DIR
           value: "$(workspaces.vulndb-cache.path)/grype/db"
-      # anchore/grype:latest is distroless â€” binary is at /grype, not on PATH
+      # anchore/grype:latest is distroless  binary is at /grype, not on PATH
       command: ["/grype"]
       args:
         - "docker-archive:$(workspaces.image-tar.path)/image.tar"
@@ -2774,15 +2774,15 @@ spec:
             print(f"Parse warning: {e}")
         pathlib.Path("$(results.CRITICAL_COUNT.path)").write_text(str(counts["Critical"]))
         pathlib.Path("$(results.HIGH_COUNT.path)").write_text(str(counts["High"]))
-        print(f"Grype result â€” Critical={counts['Critical']} High={counts['High']}")
+        print(f"Grype result  Critical={counts['Critical']} High={counts['High']}")
         grype_path = pathlib.Path("$(workspaces.results.path)/image-scan/grype.json")
         size_kb = grype_path.stat().st_size // 1024 if grype_path.exists() else 0
         total = sum(counts.values())
         print(f"Report: image-scan/grype.json  ({size_kb} KB, {total} matches)")
 
 ---
-# â”€â”€ Syft â€” SBOM generation from local tar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# anchore/syft:latest is distroless (no /bin/sh) â€” cannot use script:.
+#  Syft  SBOM generation from local tar 
+# anchore/syft:latest is distroless (no /bin/sh)  cannot use script:.
 # Step 1 creates the output dir (python:3.12-slim).
 # Step 2 runs syft via command/args (no script injection).
 # Step 3 parses the CycloneDX JSON results (python:3.12-slim).
@@ -2821,7 +2821,7 @@ spec:
         mkdir -p $(workspaces.results.path)/sbom $(workspaces.results.path)/.syft-cache
         TAR="$(workspaces.image-tar.path)/image.tar"
         TAR_SIZE=$(du -sh "$TAR" 2>/dev/null | cut -f1 || echo "?")
-        echo "â•â• Syft SBOM generation â•â•"
+        echo " Syft SBOM generation "
         echo "  Image : $(params.image-ref)"
         echo "  Tar   : $TAR ($TAR_SIZE)"
 
@@ -2844,7 +2844,7 @@ spec:
           value: "$(workspaces.results.path)/.syft-cache"
         - name: TMPDIR
           value: "$(workspaces.results.path)/.syft-cache"
-      # anchore/syft:latest is distroless â€” binary is at /syft, not on PATH
+      # anchore/syft:latest is distroless  binary is at /syft, not on PATH
       command: ["/syft"]
       args:
         - "docker-archive:$(workspaces.image-tar.path)/image.tar"
@@ -2875,11 +2875,11 @@ spec:
         pathlib.Path("$(results.PACKAGE_COUNT.path)").write_text(str(count))
         sbom_path = pathlib.Path("$(workspaces.results.path)/sbom/sbom.cyclonedx.json")
         size_kb = sbom_path.stat().st_size // 1024 if sbom_path.exists() else 0
-        print(f"Syft SBOM â€” {count} components")
+        print(f"Syft SBOM  {count} components")
         print(f"Report: sbom/sbom.cyclonedx.json  ({size_kb} KB, {count} components)")
 
 ---
-# â”€â”€ Image Push (only after human YES) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Image Push (only after human YES) 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -2937,7 +2937,7 @@ spec:
       script: |
         #!/bin/sh
         if [ "$(params.require-image-signing)" = "true" ] && [ ! -f /cosign-keys/cosign.key ]; then
-          echo "Image signing is required for this app, but the cosign-keys secret is missing â€” refusing to push an unsigned image."
+          echo "Image signing is required for this app, but the cosign-keys secret is missing  refusing to push an unsigned image."
           exit 1
         fi
 
@@ -2958,7 +2958,7 @@ spec:
         TAR="$(workspaces.image-tar.path)/image.tar"
         CREDS_DIR="$(workspaces.registry-credentials.path)"
 
-        # Normalise Docker Hub registry: any *.docker.com / *.docker.io â†’ index.docker.io
+        # Normalise Docker Hub registry: any *.docker.com / *.docker.io  index.docker.io
         REGISTRY="$(params.image-registry)"
         case "$REGISTRY" in
           *hub.docker.com*|*docker.io*|*registry-1.docker.io*) REGISTRY="index.docker.io" ;;
@@ -3041,7 +3041,7 @@ spec:
             print(f"Operator notify failed (non-fatal): {e}")
 
 ---
-# â”€â”€ Image Sign (optional â€” only runs when require-image-signing=true) â”€â”€â”€â”€â”€
+#  Image Sign (optional  only runs when require-image-signing=true) 
 # This task is separate from image-push so that bitnami/cosign is NEVER
 # pulled when signing is disabled. The pipeline uses a Tekton `when`
 # condition to skip this task entirely when require-image-signing != true.
@@ -3100,7 +3100,7 @@ spec:
       script: |
         #!/bin/sh
         if [ ! -f /cosign-keys/cosign.key ]; then
-          echo "cosign-keys secret not present â€” cannot sign (signing was required)"
+          echo "cosign-keys secret not present  cannot sign (signing was required)"
           exit 1
         fi
         FULL_REF="$(params.image-full-url)"
@@ -3154,7 +3154,7 @@ spec:
             print(f"Operator notify failed (non-fatal): {e}")
 
 ---
-# â”€â”€ Human Gate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Human Gate 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -3167,8 +3167,8 @@ spec:
     Pauses the pipeline and polls the operator API for human decision.
     The operator exposes the AI report to the browser UI.
     Human clicks YES or NO in the browser.
-    YES â†’ pipeline continues to image-push.
-    NO  â†’ task fails, pipeline stops.
+    YES  pipeline continues to image-push.
+    NO   task fails, pipeline stops.
     Timeout: 24h (human may not be at desk immediately).
   params:
     - name: pipeline-run-id
@@ -3201,7 +3201,7 @@ spec:
         #!/usr/bin/env python3
         import urllib.request, json, time, sys, os
 
-        # Unbuffered output â€” always visible in Tekton logs immediately
+        # Unbuffered output  always visible in Tekton logs immediately
         sys.stdout.reconfigure(line_buffering=True)
 
         run_id      = "$(params.pipeline-run-id)"
@@ -3211,7 +3211,7 @@ spec:
         token       = os.environ.get("OPERATOR_API_TOKEN", "")
         auth_header = {"Authorization": f"Bearer {token}"} if token else {}
 
-        # Tell operator this pipeline is waiting for human â€” retry with backoff
+        # Tell operator this pipeline is waiting for human  retry with backoff
         # so a transient DNS hiccup doesn't silently skip the gate notification.
         for attempt in range(1, 7):
             try:
@@ -3220,20 +3220,20 @@ spec:
                     headers={"Content-Type": "application/json", **auth_header},
                     method="POST")
                 urllib.request.urlopen(req, timeout=15)
-                print(f"Gate ready (attempt {attempt}) â€” waiting for human decision on run {run_id}")
+                print(f"Gate ready (attempt {attempt})  waiting for human decision on run {run_id}")
                 print(f"Open the Platform UI to review findings and send for reviewer approval")
                 break
             except Exception as e:
                 wait = attempt * 10
-                print(f"Gate-ready attempt {attempt} failed: {e} â€” retrying in {wait}s")
+                print(f"Gate-ready attempt {attempt} failed: {e}  retrying in {wait}s")
                 if attempt < 6:
                     time.sleep(wait)
                 else:
-                    print("Gate-ready failed after 6 attempts â€” polling will continue")
+                    print("Gate-ready failed after 6 attempts  polling will continue")
 
         # Poll every 10 seconds for up to 24 hours
         polls = 0
-        max_polls = 24 * 60 * 6  # 24h Ã— 60min Ã— 6 polls/min
+        max_polls = 24 * 60 * 6  # 24h  60min  6 polls/min
 
         while polls < max_polls:
             try:
@@ -3244,12 +3244,12 @@ spec:
 
                 if decision == "YES":
                     open("$(results.DECISION.path)", "w").write("YES")
-                    print(f"Human decision: YES â€” proceeding with image push")
+                    print(f"Human decision: YES  proceeding with image push")
                     sys.exit(0)
 
                 elif decision == "NO":
                     open("$(results.DECISION.path)", "w").write("NO")
-                    print(f"Human decision: NO â€” pipeline stopped")
+                    print(f"Human decision: NO  pipeline stopped")
                     sys.exit(1)
 
             except Exception as e:
@@ -3258,12 +3258,12 @@ spec:
             time.sleep(10)
             polls += 1
 
-        print("Human gate timed out after 24h â€” stopping pipeline")
+        print("Human gate timed out after 24h  stopping pipeline")
         open("$(results.DECISION.path)", "w").write("TIMEOUT")
         sys.exit(1)
 
 ---
-# â”€â”€ Notify Status (finally task) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Notify Status (finally task) 
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -3331,7 +3331,7 @@ metadata:
     gitops-platform.io/stage: compile
 spec:
   description: >
-    .NET compile â€” dotnet restore + build + publish.
+    .NET compile  dotnet restore + build + publish.
     The SDK image version is determined by the HIGHER of (configured version) or
     (TargetFramework found in the .csproj), so a net8.0 project always gets the
     .NET 8 SDK even if the user configured 6.0. Fails fast with a clear message
@@ -3346,7 +3346,7 @@ spec:
   workspaces:
     - name: source
   steps:
-    # â”€â”€ Version detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Version detection 
     # Read TargetFramework(s) from the csproj and write the required SDK major
     # version to a shared file. This runs in a minimal python image that is
     # available in all Kind clusters.
@@ -3377,7 +3377,7 @@ spec:
             candidates = [c for c in candidates if "test" not in c.lower()]
 
         if not candidates:
-            print(f"No .csproj found â€” using configured version {configured}")
+            print(f"No .csproj found  using configured version {configured}")
             open("/workspace/sdk-version.txt", "w").write(configured)
             sys.exit(0)
 
@@ -3385,10 +3385,10 @@ spec:
         print(f"Inspecting: {csproj}")
         content = open(csproj).read()
 
-        # Extract TargetFramework(s) â€” handles net6.0, net8.0, netstandard2.0, etc.
+        # Extract TargetFramework(s)  handles net6.0, net8.0, netstandard2.0, etc.
         targets = re.findall(r"<TargetFrameworks?>\s*([^<]+)\s*</TargetFrameworks?>", content)
         if not targets:
-            print(f"No TargetFramework found in {csproj} â€” using {configured}")
+            print(f"No TargetFramework found in {csproj}  using {configured}")
             open("/workspace/sdk-version.txt", "w").write(configured)
             sys.exit(0)
 
@@ -3401,7 +3401,7 @@ spec:
                     versions.append((int(m.group(1)), int(m.group(2)), t))
 
         if not versions:
-            print(f"Only netstandard targets found â€” using {configured}")
+            print(f"Only netstandard targets found  using {configured}")
             open("/workspace/sdk-version.txt", "w").write(configured)
             sys.exit(0)
 
@@ -3425,7 +3425,7 @@ spec:
         print(f"SDK version resolved: {sdk}")
         open("/workspace/sdk-version.txt", "w").write(sdk)
 
-    # â”€â”€ Compile â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    #  Compile 
     # SDK 9.0 is backward compatible: builds net6.0, net7.0, net8.0, net9.0.
     # Using the latest SDK avoids NETSDK1045 errors when the csproj targets a
     # version higher than the user-configured version (a common misconfiguration).
@@ -3444,7 +3444,7 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       env:
-        # 65532 has no home in /etc/passwd â€” redirect all .NET/NuGet cache to workspace
+        # 65532 has no home in /etc/passwd  redirect all .NET/NuGet cache to workspace
         - name: HOME
           value: "$(workspaces.source.path)/.dotnet-home"
         - name: DOTNET_CLI_HOME
@@ -3461,29 +3461,29 @@ spec:
         set -e
         BUILD_FILE="$(params.build-file)"
 
-        echo "â”€â”€ .NET compile: SDK=$(params.build-version) â”€â”€"
+        echo " .NET compile: SDK=$(params.build-version) "
         dotnet --version
 
-        # Goal: validate that the code compiles â€” NOT produce the final artifact.
+        # Goal: validate that the code compiles  NOT produce the final artifact.
         # Kaniko builds the Docker image using the Dockerfile which runs its own
         # `dotnet publish` inside a multi-stage build. Doing publish here is
         # redundant and hits permission issues creating output directories.
         if [ -n "$BUILD_FILE" ]; then
-          echo "â”€â”€ dotnet restore: $BUILD_FILE â”€â”€"
+          echo " dotnet restore: $BUILD_FILE "
           dotnet restore "$BUILD_FILE"
-          echo "â”€â”€ dotnet build: $BUILD_FILE â”€â”€"
+          echo " dotnet build: $BUILD_FILE "
           dotnet build "$BUILD_FILE" -c Release --no-restore
         else
-          echo "â”€â”€ dotnet restore â”€â”€"
+          echo " dotnet restore "
           dotnet restore
-          echo "â”€â”€ dotnet build â”€â”€"
+          echo " dotnet build "
           dotnet build -c Release --no-restore
         fi
 
-        echo "â”€â”€ Build artifacts â”€â”€"
+        echo " Build artifacts "
         find . -path "*/bin/Release/*.dll" -not -path "*/obj/*" 2>/dev/null \
           | while read f; do echo "  $(du -sh "$f" | cut -f1)  $f"; done
-        echo "â”€â”€ .NET compile complete â”€â”€"
+        echo " .NET compile complete "
 
 # Source: platform/tekton/tasks/build/compile-go-task.yaml
 ---
@@ -3495,7 +3495,7 @@ metadata:
   labels:
     gitops-platform.io/stage: compile
 spec:
-  description: "Go compile â€” go build ./... Validates compilation before image build."
+  description: "Go compile  go build ./... Validates compilation before image build."
   params:
     - name: build-tool
       default: "go"
@@ -3523,7 +3523,7 @@ spec:
         limits:   {cpu: "2000m", memory: "2Gi"}
       env:
         # uid 1000 has no /etc/passwd entry. The golang image sets GOPATH=/go
-        # which is root-owned â€” go mod download fails writing to /go/pkg/mod.
+        # which is root-owned  go mod download fails writing to /go/pkg/mod.
         # Override GOPATH and GOCACHE to the source workspace (writable by uid 1000).
         - name: HOME
           value: "$(workspaces.source.path)/.compile-home"
@@ -3536,13 +3536,13 @@ spec:
       script: |
         #!/bin/sh
         set -e
-        echo "â”€â”€ Go compile: version=$(params.build-version) â”€â”€"
+        echo " Go compile: version=$(params.build-version) "
 
         mkdir -p "$GOPATH/pkg/mod" "$GOCACHE"
 
         go mod download
         go build ./...
-        echo "â”€â”€ Go compile complete â”€â”€"
+        echo " Go compile complete "
 
 # Source: platform/tekton/tasks/build/compile-java-task.yaml
 ---
@@ -3554,7 +3554,7 @@ metadata:
   labels:
     gitops-platform.io/stage: compile
 spec:
-  description: "Java compile â€” Maven or Gradle (wrapper-aware). Produces JARs/WARs for image build and tests."
+  description: "Java compile  Maven or Gradle (wrapper-aware). Produces JARs/WARs for image build and tests."
   params:
     - name: build-tool
       default: "maven"
@@ -3566,7 +3566,7 @@ spec:
     - name: source
   steps:
     - name: compile
-      # Use the JDK version the user selected â€” not hardcoded to 21
+      # Use the JDK version the user selected  not hardcoded to 21
       image: k8secops/k8secops:maven-3.9-eclipse-temurin-$(params.build-version)
       imagePullPolicy: IfNotPresent
       workingDir: $(workspaces.source.path)
@@ -3582,7 +3582,7 @@ spec:
         requests: {cpu: "500m", memory: "1Gi"}
         limits:   {cpu: "2000m", memory: "3Gi"}
       env:
-        # uid 1000 has no /etc/passwd entry â€” Maven writes local repo to
+        # uid 1000 has no /etc/passwd entry  Maven writes local repo to
         # $HOME/.m2/repository and Gradle writes cache to $HOME/.gradle.
         # Redirect both into the source workspace (writable by uid 1000).
         - name: HOME
@@ -3594,11 +3594,11 @@ spec:
         set -e
         BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
-        echo "â”€â”€ Java compile: build-tool=$BUILD_TOOL version=$(params.build-version) â”€â”€"
+        echo " Java compile: build-tool=$BUILD_TOOL version=$(params.build-version) "
 
         mkdir -p "$HOME/.m2" "$GRADLE_USER_HOME"
 
-        # Maven local repo â†’ workspace so uid 1000 can write to it
+        # Maven local repo  workspace so uid 1000 can write to it
         MVN_REPO="$(workspaces.source.path)/.m2/repository"
         MVN_FLAGS="-Dmaven.repo.local=$MVN_REPO -DskipTests -B"
 
@@ -3610,7 +3610,7 @@ spec:
             MVN="mvn"
             [ -x "./mvnw" ] && MVN="./mvnw" && echo "  (using Maven Wrapper)"
             $MVN package $MVN_FLAGS $EXTRA
-            echo "â”€â”€ Artifacts â”€â”€"
+            echo " Artifacts "
             find . -name "*.jar" -o -name "*.war" -o -name "*.ear" 2>/dev/null \
               | grep -v "\.m2\|test-classes\|/original-" | sort \
               | while read f; do echo "  $(du -sh "$f" | cut -f1)  $f"; done
@@ -3629,7 +3629,7 @@ spec:
           *)
             echo "Unknown Java build-tool=$BUILD_TOOL"; exit 1 ;;
         esac
-        echo "â”€â”€ Java compile complete â”€â”€"
+        echo " Java compile complete "
 
 # Source: platform/tekton/tasks/build/compile-nodejs-task.yaml
 ---
@@ -3641,7 +3641,7 @@ metadata:
   labels:
     gitops-platform.io/stage: compile
 spec:
-  description: "Node.js compile â€” install deps + npm run build (if build script exists)."
+  description: "Node.js compile  install deps + npm run build (if build script exists)."
   params:
     - name: build-tool
       default: "npm"
@@ -3668,7 +3668,7 @@ spec:
         requests: {cpu: "500m", memory: "512Mi"}
         limits:   {cpu: "2000m", memory: "2Gi"}
       env:
-        # uid 1000 has no /etc/passwd entry so $HOME is empty â€” npm, yarn,
+        # uid 1000 has no /etc/passwd entry so $HOME is empty  npm, yarn,
         # and corepack all write cache/config to $HOME and fail without it.
         - name: HOME
           value: "$(workspaces.source.path)/.compile-home"
@@ -3678,7 +3678,7 @@ spec:
         #!/bin/sh
         set -e
         BUILD_TOOL="$(params.build-tool)"
-        echo "â”€â”€ Node.js compile: build-tool=$BUILD_TOOL version=$(params.build-version) â”€â”€"
+        echo " Node.js compile: build-tool=$BUILD_TOOL version=$(params.build-version) "
 
         mkdir -p "$HOME"
 
@@ -3700,7 +3700,7 @@ spec:
             npm run build --if-present
             ;;
         esac
-        echo "â”€â”€ Node.js compile complete â”€â”€"
+        echo " Node.js compile complete "
 
 # Source: platform/tekton/tasks/build/compile-python-task.yaml
 ---
@@ -3712,7 +3712,7 @@ metadata:
   labels:
     gitops-platform.io/stage: compile
 spec:
-  description: "Python compile â€” install dependencies and validate syntax (py_compile). Python is interpreted so no binary artifact is produced."
+  description: "Python compile  install dependencies and validate syntax (py_compile). Python is interpreted so no binary artifact is produced."
   params:
     - name: build-tool
       default: "pip"
@@ -3749,11 +3749,11 @@ spec:
         set -e
         BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
-        echo "â”€â”€ Python compile: build-tool=$BUILD_TOOL version=$(params.build-version) â”€â”€"
+        echo " Python compile: build-tool=$BUILD_TOOL version=$(params.build-version) "
 
         mkdir -p "$HOME"
 
-        # Always upgrade pip first â€” avoids version notice noise and ensures
+        # Always upgrade pip first  avoids version notice noise and ensures
         # consistent behaviour across base images that ship older pip versions
         pip install --upgrade pip --quiet --user --break-system-packages 2>/dev/null || true
 
@@ -3778,10 +3778,10 @@ spec:
             --no-warn-script-location
         fi
 
-        # Syntax validation â€” catches import errors and syntax mistakes early.
+        # Syntax validation  catches import errors and syntax mistakes early.
         # PYTHONDONTWRITEBYTECODE=1 suppresses __pycache__ creation so the
         # task does not fail on permission-denied errors in read-only dirs.
-        echo "â”€â”€ Syntax check â”€â”€"
+        echo " Syntax check "
         find . -name "*.py" \
           -not -path "./.git/*" \
           -not -path "./node_modules/*" \
@@ -3791,11 +3791,11 @@ spec:
           | PYTHONDONTWRITEBYTECODE=1 xargs python -m py_compile 2>&1 \
           && echo "All .py files syntax-valid"
 
-        echo "â”€â”€ Python compile complete â”€â”€"
+        echo " Python compile complete "
 
 # Source: platform/tekton/tasks/build/compile-task.yaml
 ---
-# â”€â”€ Language Compile Task â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  Language Compile Task 
 # Compiles application source into artifacts (JAR/WAR/dist) before tests.
 # Results are written to the shared `source` workspace so unit-tests and
 # Kaniko (build-image-local) can consume them without recompiling.
@@ -3842,16 +3842,16 @@ spec:
         BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
 
-        echo "â•â• Compile stage â•â•  build-tool=$BUILD_TOOL"
+        echo " Compile stage   build-tool=$BUILD_TOOL"
 
         case "$BUILD_TOOL" in
           maven)
             EXTRA=""
             [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "pom.xml" ] && EXTRA="-f $BUILD_FILE"
-            echo "â”€â”€ Maven: compiling (skip tests) â”€â”€"
+            echo " Maven: compiling (skip tests) "
             mvn package -DskipTests -B $EXTRA
             echo ""
-            echo "â”€â”€ Artifacts produced: â”€â”€"
+            echo " Artifacts produced: "
             find . -name "*.jar" -o -name "*.war" -o -name "*.ear" 2>/dev/null \
               | grep -v "\.m2\|test-classes\|/original-" | sort \
               | while read f; do
@@ -3862,10 +3862,10 @@ spec:
           gradle)
             EXTRA=""
             [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "build.gradle" ] && EXTRA="-b $BUILD_FILE"
-            echo "â”€â”€ Gradle: assembling (skip tests) â”€â”€"
+            echo " Gradle: assembling (skip tests) "
             ./gradlew assemble $EXTRA
             echo ""
-            echo "â”€â”€ Artifacts produced: â”€â”€"
+            echo " Artifacts produced: "
             find . -name "*.jar" -o -name "*.war" 2>/dev/null \
               | grep -v "/test" | sort \
               | while read f; do
@@ -3875,49 +3875,49 @@ spec:
             ;;
           npm)
             if command -v npm >/dev/null 2>&1; then
-              echo "â”€â”€ npm: installing and building â”€â”€"
+              echo " npm: installing and building "
               npm install --silent && npm run build --if-present
             else
-              echo "â”€â”€ npm compile: skipped (npm not in this image â€” handled by multi-stage Dockerfile) â”€â”€"
+              echo " npm compile: skipped (npm not in this image  handled by multi-stage Dockerfile) "
             fi
             ;;
           pip|python)
-            echo "â”€â”€ Python: no compile step â€” source copied directly into image â”€â”€"
+            echo " Python: no compile step  source copied directly into image "
             ;;
           go)
             if command -v go >/dev/null 2>&1; then
-              echo "â”€â”€ Go: building â”€â”€"
+              echo " Go: building "
               go build ./...
             else
-              echo "â”€â”€ Go compile: skipped (use multi-stage Dockerfile with RUN go build) â”€â”€"
+              echo " Go compile: skipped (use multi-stage Dockerfile with RUN go build) "
             fi
             ;;
           dotnet)
             if command -v dotnet >/dev/null 2>&1; then
-              echo "â”€â”€ .NET: publishing â”€â”€"
+              echo " .NET: publishing "
               dotnet publish -c Release -o ./publish --nologo -q
             else
-              echo "â”€â”€ dotnet compile: skipped (dotnet not in this image â€” handled by multi-stage Dockerfile) â”€â”€"
+              echo " dotnet compile: skipped (dotnet not in this image  handled by multi-stage Dockerfile) "
             fi
             ;;
           none|skip|"")
-            echo "â”€â”€ Compile step skipped (build-tool=none) â”€â”€"
+            echo " Compile step skipped (build-tool=none) "
             ;;
           *)
-            echo "â”€â”€ Unknown build-tool=$BUILD_TOOL â€” skipping compile â”€â”€"
+            echo " Unknown build-tool=$BUILD_TOOL  skipping compile "
             ;;
         esac
 
         echo ""
-        echo "â”€â”€ Compile stage complete â”€â”€"
+        echo " Compile stage complete "
 
 # Source: platform/tekton/tasks/build/malware-scan.yaml
 ---
-# â”€â”€ ClamAV malware scan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+#  ClamAV malware scan 
 # Scans the locally built image tar for malware before push.
 # Step 1: freshclam updates virus definitions into the results
 #         workspace so they persist across the two steps.
-#         Runs as root â€” freshclam needs write access to the DB dir.
+#         Runs as root  freshclam needs write access to the DB dir.
 # Step 2: clamscan reads from that same DB dir and scans the tar.
 #         Runs as the clamav user (non-root).
 apiVersion: tekton.dev/v1
@@ -3959,7 +3959,7 @@ spec:
         if freshclam --datadir="$DB" --quiet 2>/dev/null; then
           echo "Virus definitions updated"
         else
-          echo "Network update failed â€” copying bundled definitions"
+          echo "Network update failed  copying bundled definitions"
           cp -r /var/lib/clamav/. "$DB/" 2>/dev/null || true
         fi
 
@@ -3984,7 +3984,7 @@ spec:
         OUT="$(workspaces.results.path)/malware/clamav.txt"
         TAR_SIZE=$(du -sh "$TAR" 2>/dev/null | cut -f1 || echo "?")
 
-        echo "â•â• ClamAV malware scan â•â•"
+        echo " ClamAV malware scan "
         echo "  Image : $(params.image-ref)"
         echo "  Tar   : $TAR ($TAR_SIZE)"
         echo ""
@@ -4021,7 +4021,7 @@ spec:
     Reads all 5 category analysis JSONs from ai-results, fetches any pipeline
     failure context, calls AI once to synthesise a recommendation and executive
     summary, then posts the complete aiReport to the operator.
-    The AI call here is cheap â€” it only receives compact category summaries,
+    The AI call here is cheap  it only receives compact category summaries,
     not raw scanner findings.
   params:
     - name: app-name
@@ -4091,7 +4091,7 @@ spec:
         API_TOKEN = os.environ.get("OPERATOR_API_TOKEN", "")
         SEV_ORDER = {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"INFO":4,"UNKNOWN":5}
 
-        # â”€â”€ Read all category results â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Read all category results 
         categories = {}
         for cat in ("secrets", "sast", "sca", "image", "tests"):
             fp = IN_DIR / f"{cat}.json"
@@ -4106,12 +4106,12 @@ spec:
                                        "critical":0,"high":0,"medium":0,"low":0,
                                        "findings":[],"all_raw":[],"summary":"Analysis unavailable."}
             else:
-                print(f"Missing {cat}.json â€” sub-task may have failed")
+                print(f"Missing {cat}.json  sub-task may have failed")
                 categories[cat] = {"category": cat, "ran": False, "verdict": "PROCEED",
                                    "critical":0,"high":0,"medium":0,"low":0,
                                    "findings":[],"all_raw":[],"summary":"Not analysed."}
 
-        # â”€â”€ Merge all findings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Merge all findings 
         all_ai_findings = []
         all_raw_findings = []
         for cat_data in categories.values():
@@ -4120,7 +4120,7 @@ spec:
 
         all_ai_findings.sort(key=lambda f: SEV_ORDER.get(f.get("severity","UNKNOWN"),5))
 
-        # â”€â”€ Aggregate counts from ALL categories â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Aggregate counts from ALL categories 
         total_counts = {
             "critical": sum(c.get("critical",0) for c in categories.values()),
             "high":     sum(c.get("high",0)     for c in categories.values()),
@@ -4132,7 +4132,7 @@ spec:
         total_counts["tests_failed"] = test_summary.get("failed", 0)
         total_counts["coverage_pct"] = test_summary.get("coverage", 0.0)
 
-        # â”€â”€ Fetch pipeline failure context from operator â”€â”€â”€â”€â”€â”€
+        #  Fetch pipeline failure context from operator 
         pipeline_failures = []
         try:
             req = urllib.request.Request(
@@ -4148,7 +4148,7 @@ spec:
         except Exception as e:
             print(f"failure-context fetch (non-fatal): {e}")
 
-        # â”€â”€ Risk grade â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Risk grade 
         def compute_risk_grade(critical, high, medium, tests_failed):
             if critical > 0:
                 return "F" if (critical >= 3 or tests_failed > 0) else "D"
@@ -4173,14 +4173,14 @@ spec:
         verdict      = compute_verdict(total_counts["critical"], total_counts["high"],
                                        total_counts["medium"], total_counts["tests_failed"], build_failed)
 
-        # â”€â”€ Call AI for synthesis (cheap â€” only compact summaries) â”€â”€
+        #  Call AI for synthesis (cheap  only compact summaries) 
         cat_summary_lines = []
         for cat, data in categories.items():
             if data.get("ran", False):
                 cat_summary_lines.append(
                     f"  {cat.upper()}: verdict={data.get('verdict','?')} "
                     f"C={data.get('critical',0)} H={data.get('high',0)} "
-                    f"M={data.get('medium',0)} L={data.get('low',0)} â€” {data.get('summary','')}"
+                    f"M={data.get('medium',0)} L={data.get('low',0)}  {data.get('summary','')}"
                 )
         cat_block = "\n".join(cat_summary_lines) or "  No category results available."
 
@@ -4210,7 +4210,7 @@ spec:
             f"{failure_block}\n\n"
             "Respond with JSON only:\n"
             '{"recommendation":"Begin with one of: I recommend proceeding / I recommend proceeding with caution / I do not recommend proceeding. Then 2-4 sentences citing the most critical category findings by name.",'
-            '"executive_summary":"2-4 sentences for an engineering manager â€” overall posture, key risks, what must be fixed before release.",'
+            '"executive_summary":"2-4 sentences for an engineering manager  overall posture, key risks, what must be fixed before release.",'
             '"pipeline_failure_analysis":{"stage":"","root_cause":"","recommended_fix":""}}'
             " or set pipeline_failure_analysis to null if no pipeline failures.\n\n"
             "Rules:\n"
@@ -4295,12 +4295,12 @@ spec:
                 "PROCEED_WITH_CAUTION": "I recommend proceeding with caution",
                 "PROCEED": "I recommend proceeding",
             }
-            root_note = (f" Tests did not run â€” compile stage failed." if tests_root_cause == "compile_error" else "")
+            root_note = (f" Tests did not run  compile stage failed." if tests_root_cause == "compile_error" else "")
             recommendation = (
                 f"{verdict_phrases.get(verdict, 'I recommend proceeding with caution')}. "
                 f"Risk grade {risk_grade}: {total_counts['critical']} critical, {total_counts['high']} high findings. "
                 f"{total_counts['tests_failed']} test failures.{root_note} "
-                f"This is automated â€” the human reviewer decides at the approval gate."
+                f"This is automated  the human reviewer decides at the approval gate."
             )
 
         if not executive_summary:
@@ -4323,7 +4323,7 @@ spec:
                 "recommendedFix": "Review the stage logs, fix the underlying error, then re-run.",
             }
 
-        # â”€â”€ Build category breakdown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Build category breakdown 
         TOOL_CATEGORY = {
             "gitleaks":"secrets","trufflehog":"secrets",
             "semgrep":"sast","bearer":"sast","bandit":"sast","gosec":"sast",
@@ -4349,7 +4349,7 @@ spec:
             bkt[sev]   += 1
             bkt["total"] += 1
 
-        # â”€â”€ Build tool breakdown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Build tool breakdown 
         tool_breakdown = {}
         for f in all_raw_findings:
             tool = f.get("tool","unknown")
@@ -4361,7 +4361,7 @@ spec:
             tool_breakdown[tool][sev]   += 1
             tool_breakdown[tool]["total"] += 1
 
-        # â”€â”€ Supply chain (from image category) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Supply chain (from image category) 
         img_cat = categories.get("image", {})
         supply_chain = {
             "sbomGenerated": img_cat.get("sbom_generated", False),
@@ -4369,7 +4369,7 @@ spec:
             "imageSigned": False,
         }
 
-        # â”€â”€ Category analysis for chat enrichment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Category analysis for chat enrichment 
         category_analysis = {
             cat: {
                 "verdict":  data.get("verdict","PROCEED"),
@@ -4388,7 +4388,7 @@ spec:
             category_analysis["tests"]["tests_ran"]           = tests_cat.get("tests_ran",True)
             category_analysis["tests"]["compile_log_excerpt"] = tests_cat.get("compile_log_excerpt")
 
-        # â”€â”€ Minimal allFindings (for CSV + posture) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Minimal allFindings (for CSV + posture) 
         all_findings_minimal = [
             {"tool": f.get("tool",""), "severity": f.get("severity","UNKNOWN"),
              "cve": f.get("cve",""), "title": (f.get("title","") or "")[:120],
@@ -4419,7 +4419,7 @@ spec:
             "categoryAnalysis":       category_analysis,
         }
 
-        # â”€â”€ Post to operator â€” retry with backoff â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Post to operator  retry with backoff 
         # AI report is the gate for DEVELOPER_REVIEW: without it, the developer
         # sees no findings and cannot make an informed send-for-review decision.
         data = json.dumps(full_report).encode()
@@ -4440,7 +4440,7 @@ spec:
                 break
             except Exception as e:
                 wait = attempt * 10
-                print(f"AI report post attempt {attempt} failed: {e} â€” retrying in {wait}s")
+                print(f"AI report post attempt {attempt} failed: {e}  retrying in {wait}s")
                 if attempt < 6:
                     time.sleep(wait)
         if not posted:
@@ -4526,7 +4526,7 @@ spec:
         findings = []
         ran = False
 
-        # â”€â”€ Trivy JSON â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Trivy JSON 
         trivy_json = SCAN_DIR / "image-scan" / "trivy.json"
         if trivy_json.exists():
             ran = True
@@ -4542,7 +4542,7 @@ spec:
             except Exception as e:
                 print(f"Trivy parse: {e}")
 
-        # â”€â”€ Grype JSON â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Grype JSON 
         grype_json = SCAN_DIR / "image-scan" / "grype.json"
         if grype_json.exists():
             ran = True
@@ -4559,7 +4559,7 @@ spec:
             except Exception as e:
                 print(f"Grype parse: {e}")
 
-        # â”€â”€ Hadolint JSON â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Hadolint JSON 
         hadolint_json = SCAN_DIR / "dockerfile-lint" / "hadolint.json"
         if hadolint_json.exists():
             ran = True
@@ -4575,7 +4575,7 @@ spec:
             except Exception as e:
                 print(f"Hadolint parse: {e}")
 
-        # â”€â”€ SBOM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  SBOM 
         sbom_path = SCAN_DIR / "sbom" / "sbom.cyclonedx.json"
         sbom_generated = sbom_path.exists() and sbom_path.stat().st_size > 0
         sbom_components = 0
@@ -4590,7 +4590,7 @@ spec:
                   for s in ("CRITICAL","HIGH","MEDIUM","LOW")}
         print(f"Image findings: {len(findings)} total  SBOM={sbom_generated}/{sbom_components} components  {counts}")
 
-        # â”€â”€ Call AI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Call AI 
         ai_findings = []
         summary = ""
 
@@ -4659,7 +4659,7 @@ spec:
                 '"impact":"","fix_description":"","fix_code":""}'
                 ']}\n\n'
                 "Rules: BLOCK if CRITICAL CVE with fix version exists. "
-                "cve and fix_version must come from the source data â€” never invent. "
+                "cve and fix_version must come from the source data  never invent. "
                 "Respond with valid JSON only, no markdown."
             )
             raw = call_ai(prompt)
@@ -4786,7 +4786,7 @@ spec:
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         LANGUAGE = "$(params.language)"
 
-        # â”€â”€ Parse all SAST SARIF files â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Parse all SAST SARIF files 
         findings = []
         sast_dir = SCAN_DIR / "sast"
         ran = False
@@ -4823,7 +4823,7 @@ spec:
             parse_sarif(sarif_path, sarif_path.stem)
             ran = True
 
-        # SpotBugs XML (Java) â€” map priority attribute to severity
+        # SpotBugs XML (Java)  map priority attribute to severity
         # priority 1=highest risk, 5=lowest (SpotBugs convention)
         spotbugs_xml = sast_dir / "spotbugs.xml"
         if spotbugs_xml.exists():
@@ -4848,8 +4848,8 @@ spec:
             except Exception as e:
                 print(f"SpotBugs parse: {e}")
 
-        # ESLint Security JSON (Node.js) â€” outputs flat JSON array, no SARIF
-        # severity: 2=errorâ†’HIGH, 1=warningâ†’MEDIUM
+        # ESLint Security JSON (Node.js)  outputs flat JSON array, no SARIF
+        # severity: 2=errorHIGH, 1=warningMEDIUM
         eslint_json = sast_dir / "eslint.json"
         if eslint_json.exists():
             ran = True
@@ -4889,7 +4889,7 @@ spec:
                   for s in ("CRITICAL","HIGH","MEDIUM","LOW")}
         print(f"SAST findings: {len(findings)} total  language={LANGUAGE}  {counts}")
 
-        # â”€â”€ Call AI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Call AI 
         ai_findings = []
         summary = ""
 
@@ -4990,7 +4990,7 @@ spec:
             "findings": ai_findings or [
                 {"tool": f["tool"], "severity": f["severity"], "title": f["title"],
                  "location": f.get("location",""), "cve": "", "fix_version": "",
-                 "impact": "Security weakness â€” exploitable if deployed without fix.",
+                 "impact": "Security weakness  exploitable if deployed without fix.",
                  "fix_description": "Review the flagged code and apply secure coding pattern.",
                  "fix_code": ""}
                 for f in findings[:10]
@@ -5079,7 +5079,7 @@ spec:
         findings = []
         ran = False
 
-        # â”€â”€ OSV-Scanner SARIF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  OSV-Scanner SARIF 
         osv_sarif = SCAN_DIR / "sca" / "osv.sarif"
         if osv_sarif.exists():
             ran = True
@@ -5106,7 +5106,7 @@ spec:
             except Exception as e:
                 print(f"OSV SARIF parse: {e}")
 
-        # â”€â”€ OWASP Dependency-Check JSON â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  OWASP Dependency-Check JSON 
         owasp_json = SCAN_DIR / "sca" / "dependency-check-report.json"
         if owasp_json.exists():
             ran = True
@@ -5132,7 +5132,7 @@ spec:
                   for s in ("CRITICAL","HIGH","MEDIUM","LOW")}
         print(f"SCA findings: {len(findings)} total  {counts}")
 
-        # â”€â”€ Call AI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Call AI 
         ai_findings = []
         summary = ""
 
@@ -5198,7 +5198,7 @@ spec:
                 '"impact":"","fix_description":"Upgrade X from Y to Z","fix_code":""}'
                 ']}\n\n'
                 "Rules: BLOCK if CRITICAL CVE with a known fix version exists. "
-                "cve and fix_version must be copied exactly from the source data â€” never invented. "
+                "cve and fix_version must be copied exactly from the source data  never invented. "
                 "fix_description: 'Upgrade {package} to {fix_version}'. "
                 "Respond with valid JSON only, no markdown."
             )
@@ -5324,7 +5324,7 @@ spec:
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         CVE_RE = re.compile(r"^CVE-\d{4}-\d+$", re.IGNORECASE)
 
-        # â”€â”€ Parse Gitleaks SARIF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Parse Gitleaks SARIF 
         findings = []
 
         def parse_sarif(path, tool):
@@ -5354,7 +5354,7 @@ spec:
         if sarif.exists():
             parse_sarif(sarif, "gitleaks")
 
-        # â”€â”€ Parse TruffleHog (verified secrets only = CRITICAL) â”€â”€
+        #  Parse TruffleHog (verified secrets only = CRITICAL) 
         th = SCAN_DIR / "secrets" / "trufflehog.json"
         if th.exists():
             try:
@@ -5378,7 +5378,7 @@ spec:
 
         ran = sarif.exists() or th.exists()
 
-        # â”€â”€ Call AI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Call AI 
         ai_findings = []
         summary = ""
 
@@ -5481,7 +5481,7 @@ spec:
             "findings": ai_findings or [
                 {"tool": f["tool"], "severity": f["severity"], "title": f["title"],
                  "location": f.get("location",""), "cve": "", "fix_version": "",
-                 "impact": "Active credential â€” immediate account compromise risk.",
+                 "impact": "Active credential  immediate account compromise risk.",
                  "fix_description": "Rotate/revoke the credential, then remove from git history.",
                  "fix_code": ""}
                 for f in findings[:10]
@@ -5519,7 +5519,7 @@ spec:
       type: string
     - name: testing-enabled
       type: string
-      default: "true"   # "false" â†’ write disabled result and exit immediately
+      default: "true"   # "false"  write disabled result and exit immediately
   workspaces:
     - name: test-results
     - name: ai-results
@@ -5576,11 +5576,11 @@ spec:
         LANGUAGE    = "$(params.language)"
         API_TOKEN   = os.environ.get("OPERATOR_API_TOKEN", "")
 
-        # â”€â”€ Short-circuit when testing is intentionally disabled â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Short-circuit when testing is intentionally disabled 
         # The unit-tests task is absent from the pipeline when testing is
         # disabled, so there are no test results to analyse. Write a clear
         # "disabled" result so the aggregate task and chat agent know tests
-        # were intentionally skipped â€” not failed or missing.
+        # were intentionally skipped  not failed or missing.
         if "$(params.testing-enabled)" == "false":
             disabled_result = {
                 "category": "tests",
@@ -5592,7 +5592,7 @@ spec:
                 "all_raw": [],
                 "summary": (
                     "Automated testing is disabled for this application. "
-                    "Tests were intentionally skipped â€” this is not a failure. "
+                    "Tests were intentionally skipped  this is not a failure. "
                     "To enable testing, edit the application and turn on 'Enable automated testing'."
                 ),
                 "root_cause": "testing_disabled",
@@ -5603,10 +5603,10 @@ spec:
                 "test_log_excerpt": None,
             }
             (OUT_DIR / "tests.json").write_text(json.dumps(disabled_result, indent=2))
-            print("Testing disabled â€” wrote tests.json with testing_disabled=True")
+            print("Testing disabled  wrote tests.json with testing_disabled=True")
             raise SystemExit(0)
 
-        # â”€â”€ Parse test results â€” JUnit XML (Java/Python/Node.js/Go) â”€â”€â”€â”€â”€â”€
+        #  Parse test results  JUnit XML (Java/Python/Node.js/Go) 
         test_summary = {"passed": 0, "failed": 0, "coverage": 0.0, "failures": []}
         for xml_file in TEST_DIR.rglob("*.xml"):
             try:
@@ -5627,7 +5627,7 @@ spec:
             except Exception as e:
                 print(f"JUnit parse {xml_file}: {e}")
 
-        # â”€â”€ .NET TRX format (results.trx â€” XML with VS namespace) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  .NET TRX format (results.trx  XML with VS namespace) 
         # dotnet test outputs TRX files, not JUnit XML
         _TRX_NS = "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"
         for trx_file in TEST_DIR.rglob("*.trx"):
@@ -5650,7 +5650,7 @@ spec:
             except Exception as e:
                 print(f"TRX parse {trx_file}: {e}")
 
-        # â”€â”€ Coverage â€” XML (Java/Python/Node.js/.NET), text (Go) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Coverage  XML (Java/Python/Node.js/.NET), text (Go) 
         for cov_file in list(TEST_DIR.rglob("coverage.xml")) + list(TEST_DIR.rglob("*.cobertura.xml")):
             try:
                 rate = float(ET.parse(cov_file).getroot().get("line-rate", "0"))
@@ -5673,7 +5673,7 @@ spec:
         print(f"Test results: passed={test_summary['passed']} failed={test_summary['failed']} "
               f"coverage={test_summary['coverage']}%  tests_ran={tests_ran}")
 
-        # â”€â”€ Fetch stage logs from operator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Fetch stage logs from operator 
         # This is the KEY step: if tests never ran, the compile or test stage
         # log will tell us why (syntax error, missing dep, infra failure).
         def fetch_stage_log(stage: str, max_chars: int = 4000) -> str:
@@ -5715,7 +5715,7 @@ spec:
             if compile_failed:
                 print("Compile failure detected from log content")
 
-        # â”€â”€ Call AI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        #  Call AI 
         ai_test_analysis = []
         summary = ""
 
@@ -5795,7 +5795,7 @@ spec:
             "Critical rules:\n"
             "- If the compile log contains error messages (syntax errors, missing packages, "
             "  build failures), set root_cause='compile_error' and tests_ran=false. "
-            "  Explain the compile error in the summary â€” this is NOT a test failure.\n"
+            "  Explain the compile error in the summary  this is NOT a test failure.\n"
             "- BLOCK if tests_ran=true and failed > 0, OR if root_cause='compile_error'.\n"
             "- test_analysis should diagnose the real root cause, not just copy the error message.\n"
             "- If tests passed and coverage is below threshold, set verdict=PROCEED_WITH_CAUTION.\n"
