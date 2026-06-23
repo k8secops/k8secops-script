@@ -229,8 +229,8 @@ Tag format: `k8secops/k8secops:<toolname>-<version>`
 | Topic | Contact |
 |-------|---------|
 | Issues and bugs | Open an issue in this repository |
-| Licensing and pricing | sales@k8secops.io |
-| Security vulnerabilities | security@k8secops.io |
+| Licensing and pricing | k8secops@gmail.com |
+| Security vulnerabilities | k8secops@gmail.com |
 
 ---
 
