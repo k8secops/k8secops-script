@@ -78,7 +78,9 @@ EXISTING_UI_PWD=$(kubectl get secret gitops-platform-secrets -n "${NS_CORE}" \
 
 UI_ADMIN_USERNAME="admin"
 OPERATOR_API_TOKEN="${EXISTING_TOKEN:-$(gen_token)}"
-UI_ADMIN_PASSWORD="${EXISTING_UI_PWD:-$(gen_token | head -c 16)}"
+# Default password is 'admin' — change it after first login via the UI.
+# Override before install: UI_ADMIN_PASSWORD=mypassword curl -sfL .../customer-install.sh | bash
+UI_ADMIN_PASSWORD="${UI_ADMIN_PASSWORD:-${EXISTING_UI_PWD:-admin}}"
 SONARQUBE_PASSWORD="$(gen_token | head -c 16)"
 DB_PASSWORD="$(gen_token | head -c 24)"
 
@@ -171,6 +173,14 @@ helm upgrade --install gitops-platform "${CHART_OCI}" \
   --timeout 10m
 
 info "Helm chart installed"
+
+# ── Wait for PostgreSQL before proceeding ─────────────────────────────────────
+# The operator connects to PostgreSQL on startup. If PostgreSQL isn't ready it
+# crashes and enters CrashLoopBackOff. Wait here so the operator finds it ready.
+info "Waiting for PostgreSQL to be ready (may take 60-90s on first install)..."
+kubectl rollout status statefulset/gitops-platform-postgresql \
+  -n gitops-db --timeout=180s >/dev/null
+info "PostgreSQL ready"
 
 # ── Step 5: Scanner tasks ─────────────────────────────────────────────────────
 section "Step 5 — Applying 30+ security scanner tasks"
