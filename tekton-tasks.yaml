@@ -97,7 +97,6 @@ spec:
 
         echo "Cloned $(params.url) @ $(params.revision) -> $RESULT_SHA"
 
----
 # Source: platform/tekton/tasks/secrets/secrets-scan.yaml
 ﻿---
 apiVersion: tekton.dev/v1
@@ -238,7 +237,6 @@ spec:
           echo "CRITICAL: $VERIFIED verified credential(s) found â€” rotate immediately"
         fi
 
----
 # Source: platform/tekton/tasks/sast/checkov-task.yaml
 ﻿---
 # â”€â”€ Checkov â€” IaC security scanner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -327,7 +325,6 @@ spec:
         echo "Checkov findings: $COUNT  ($SIZE)"
         echo "Report: iac/$(params.output-name).sarif"
 
----
 # Source: platform/tekton/tasks/sast/sast-tasks.yaml
 ﻿---
 # â”€â”€ Semgrep â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1245,7 +1242,6 @@ spec:
         echo -n "$COUNT" > $(results.FINDING_COUNT.path)
         echo "Roslyn Security: $COUNT findings"
 
----
 # Source: platform/tekton/tasks/sca/sca-tasks.yaml
 ﻿---
 # â”€â”€ OWASP Dependency-Check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1382,7 +1378,6 @@ spec:
         SIZE=$(du -sh $(workspaces.results.path)/sca/osv.json 2>/dev/null | cut -f1 || echo "0B")
         echo "Report: sca/osv.json  ($SIZE, $COUNT vulns)  |  sca/osv.sarif"
 
----
 # Source: platform/tekton/tasks/tests/unit-test-tasks.yaml
 ﻿---
 # â”€â”€ Java Unit Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2202,7 +2197,6 @@ spec:
         open("$(results.COVERAGE_PCT.path)","w").write("0")
         print("Unit test dispatcher: operator should patch this task")
 
----
 # Source: platform/tekton/tasks/build/build-scan-push-tasks.yaml
 ﻿---
 # â”€â”€ Build image locally â€” NO push â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3326,7 +3320,6 @@ spec:
         except Exception as e:
             print(f"Status notify failed: {e}")
 
----
 # Source: platform/tekton/tasks/build/compile-dotnet-task.yaml
 ﻿---
 apiVersion: tekton.dev/v1
@@ -3492,7 +3485,6 @@ spec:
           | while read f; do echo "  $(du -sh "$f" | cut -f1)  $f"; done
         echo "â”€â”€ .NET compile complete â”€â”€"
 
----
 # Source: platform/tekton/tasks/build/compile-go-task.yaml
 ﻿---
 apiVersion: tekton.dev/v1
@@ -3552,7 +3544,6 @@ spec:
         go build ./...
         echo "â”€â”€ Go compile complete â”€â”€"
 
----
 # Source: platform/tekton/tasks/build/compile-java-task.yaml
 ﻿---
 apiVersion: tekton.dev/v1
@@ -3640,7 +3631,6 @@ spec:
         esac
         echo "â”€â”€ Java compile complete â”€â”€"
 
----
 # Source: platform/tekton/tasks/build/compile-nodejs-task.yaml
 ﻿---
 apiVersion: tekton.dev/v1
@@ -3712,7 +3702,6 @@ spec:
         esac
         echo "â”€â”€ Node.js compile complete â”€â”€"
 
----
 # Source: platform/tekton/tasks/build/compile-python-task.yaml
 ﻿---
 apiVersion: tekton.dev/v1
@@ -3804,7 +3793,6 @@ spec:
 
         echo "â”€â”€ Python compile complete â”€â”€"
 
----
 # Source: platform/tekton/tasks/build/compile-task.yaml
 ﻿---
 # â”€â”€ Language Compile Task â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3923,7 +3911,6 @@ spec:
         echo ""
         echo "â”€â”€ Compile stage complete â”€â”€"
 
----
 # Source: platform/tekton/tasks/build/malware-scan.yaml
 ﻿---
 # â”€â”€ ClamAV malware scan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -4020,7 +4007,6 @@ spec:
           grep "FOUND" "$OUT" || true
         fi
 
----
 # Source: platform/tekton/tasks/ai/ai-aggregate.yaml
 ﻿---
 apiVersion: tekton.dev/v1
@@ -4466,7 +4452,6 @@ spec:
         print(f"Aggregate complete: riskGrade={risk_grade} verdict={verdict}")
         print(f"Recommendation: {rec}")
 
----
 # Source: platform/tekton/tasks/ai/ai-analyze-image.yaml
 ﻿---
 apiVersion: tekton.dev/v1
@@ -4728,7 +4713,6 @@ spec:
         (OUT_DIR / "image.json").write_text(json.dumps(result, indent=2))
         print(f"Image analysis written: verdict={result['verdict']}, findings={len(result['findings'])}")
 
----
 # Source: platform/tekton/tasks/ai/ai-analyze-sast.yaml
 ﻿---
 apiVersion: tekton.dev/v1
@@ -5020,7 +5004,6 @@ spec:
         (OUT_DIR / "sast.json").write_text(json.dumps(result, indent=2))
         print(f"SAST analysis written: verdict={result['verdict']}, findings={len(result['findings'])}")
 
----
 # Source: platform/tekton/tasks/ai/ai-analyze-sca.yaml
 ﻿---
 apiVersion: tekton.dev/v1
@@ -5267,7 +5250,6 @@ spec:
         (OUT_DIR / "sca.json").write_text(json.dumps(result, indent=2))
         print(f"SCA analysis written: verdict={result['verdict']}, findings={len(result['findings'])}")
 
----
 # Source: platform/tekton/tasks/ai/ai-analyze-secrets.yaml
 ﻿---
 apiVersion: tekton.dev/v1
@@ -5513,7 +5495,6 @@ spec:
         (OUT_DIR / "secrets.json").write_text(json.dumps(result, indent=2))
         print(f"Secrets analysis written: verdict={result['verdict']}, findings={len(result['findings'])}")
 
----
 # Source: platform/tekton/tasks/ai/ai-analyze-tests.yaml
 ﻿---
 apiVersion: tekton.dev/v1
