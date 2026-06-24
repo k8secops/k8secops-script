@@ -1287,16 +1287,15 @@ spec:
         DB_DIR=$(workspaces.vulndb-cache.path)/owasp
         mkdir -p $DB_DIR
 
-        # If the NVD database exists use --noupdate (fast, cache hit).
-        # If not, allow download on this first run (slow  5-10 min  but
-        # subsequent runs hit the cache). The 10-minute timeout covers
-        # the initial download; OSV-Scanner always runs in parallel as backup.
+        # Use --noupdate if the NVD database already exists (cache hit, fast).
+        # Without a cached database allow the download on first run (5-10 min).
+        # The 10-minute timeout covers the initial download.
         if [ -f $DB_DIR/odc.mv.db ]; then
           UPDATE_FLAG=--noupdate
-          echo OWASP: NVD database found in cache  skipping update
+          echo OWASP: NVD database found in cache - skipping update
         else
           UPDATE_FLAG=
-          echo OWASP: NVD database absent  downloading (first run, may take several minutes)
+          echo OWASP: NVD database not found - downloading on first run
         fi
 
         timeout 600 \
@@ -1311,7 +1310,7 @@ spec:
             --disableYarnAudit \
             --disableNodeAudit \
           2>&1 | tail -10 \
-        || echo OWASP: scan skipped (download failed or timeout)  OSV-Scanner covers dependency CVEs
+        || echo OWASP: scan skipped (download failed or timeout) - OSV-Scanner covers dependency CVEs
 
         COUNT=$(python3 -c "
         import json, glob
