@@ -1261,6 +1261,7 @@ spec:
   workspaces:
     - name: source
     - name: results
+    - name: vulndb-cache
   results:
     - name: VULN_COUNT
   steps:
@@ -1278,28 +1279,39 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       computeResources:
-        requests: {cpu: "300m", memory: "1Gi"}
-        limits:   {cpu: "1000m", memory: "3Gi"}
+        requests: {cpu: 300m, memory: 1Gi}
+        limits:   {cpu: 1000m, memory: 3Gi}
       script: |
         #!/bin/sh
         mkdir -p $(workspaces.results.path)/sca
+        DB_DIR=$(workspaces.vulndb-cache.path)/owasp
+        mkdir -p $DB_DIR
 
-        # OWASP Dep-Check requires its NVD database to be pre-seeded.
-        # --noupdate: use existing database if present; skip cleanly if absent.
-        # --scanDuration: hard wall-clock cap of 4 minutes so this task never
-        #   blows the 10-minute pipeline target.  OSV-Scanner covers the gap.
-        timeout 240 \
+        # If the NVD database exists use --noupdate (fast, cache hit).
+        # If not, allow download on this first run (slow  5-10 min  but
+        # subsequent runs hit the cache). The 10-minute timeout covers
+        # the initial download; OSV-Scanner always runs in parallel as backup.
+        if [ -f $DB_DIR/odc.mv.db ]; then
+          UPDATE_FLAG=--noupdate
+          echo OWASP: NVD database found in cache  skipping update
+        else
+          UPDATE_FLAG=
+          echo OWASP: NVD database absent  downloading (first run, may take several minutes)
+        fi
+
+        timeout 600 \
           /usr/share/dependency-check/bin/dependency-check.sh \
             --scan . \
             --format JSON \
             --format SARIF \
             --out $(workspaces.results.path)/sca \
-            --project "$(params.language)-scan" \
-            --noupdate \
+            --project $(params.language)-scan \
+            --data $DB_DIR \
+            $UPDATE_FLAG \
             --disableYarnAudit \
             --disableNodeAudit \
-          2>&1 | tail -5 \
-        || echo "OWASP: scan skipped (database absent or timeout)  OSV-Scanner covers dependency CVEs"
+          2>&1 | tail -10 \
+        || echo OWASP: scan skipped (download failed or timeout)  OSV-Scanner covers dependency CVEs
 
         COUNT=$(python3 -c "
         import json, glob
