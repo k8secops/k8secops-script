@@ -44,6 +44,7 @@ spec:
   steps:
     - name: clone
       image: k8secops/k8secops:git-v2.45.2
+      imagePullPolicy: IfNotPresent
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -2203,6 +2204,205 @@ spec:
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
+  name: gitops-pre-build
+  namespace: tekton-pipelines
+  labels:
+    gitops-platform.io/stage: build
+spec:
+  description: |
+    Verifies compiled artifacts exist and validates Dockerfile COPY sources
+    before Kaniko runs. Runs in its own pod so a failure here is isolated 
+    it does not cancel hadolint and gives a fast, clear error before spending
+    time on the build.
+  params:
+    - name: build-tool
+      default: "maven"
+    - name: language
+      default: "java"
+    - name: dockerfile-path
+      default: "./Dockerfile"
+  workspaces:
+    - name: source
+  steps:
+    - name: verify-artifacts
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/usr/bin/env python3
+        import pathlib, sys
+
+        build_tool = "$(params.build-tool)"
+        source_dir = pathlib.Path("$(workspaces.source.path)")
+
+        if build_tool in ("maven", "gradle"):
+            jars = [p for p in source_dir.rglob("*.jar")
+                    if ".m2" not in str(p) and "test-classes" not in str(p)
+                    and "original-" not in p.name]
+            if not jars:
+                print("ERROR: No JAR found -- compile stage may have failed.")
+                sys.exit(1)
+            print("-- Build artifacts ready for Kaniko: --")
+            for j in sorted(jars):
+                print(f"  {j.stat().st_size // 1024} KB  {j.relative_to(source_dir)}")
+        elif build_tool in ("npm",):
+            dist = source_dir / "dist"
+            build = source_dir / "build"
+            if not dist.exists() and not build.exists():
+                print("WARN: No dist/ or build/ directory found for npm project")
+            else:
+                print("-- npm build output ready --")
+        else:
+            print(f"-- build-tool={build_tool}: artifacts managed by Dockerfile --")
+
+    - name: validate-dockerfile
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/usr/bin/env python3
+        import re, pathlib, sys
+
+        source_dir = pathlib.Path("$(workspaces.source.path)")
+        df_rel     = "$(params.dockerfile-path)".lstrip("./")
+        df_path    = source_dir / df_rel if df_rel else source_dir / "Dockerfile"
+
+        DEFAULT_DOCKERFILES = {
+            "python": "FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\n"
+                      "RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || true\n"
+                      "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
+            "nodejs": "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\n"
+                      "RUN npm install --omit=dev 2>/dev/null || npm install 2>/dev/null || true\n"
+                      "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
+            "go":     "FROM golang:1.22-alpine\nWORKDIR /app\nCOPY . .\n"
+                      "RUN go build ./... 2>/dev/null || true\n"
+                      "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
+            "dotnet": "FROM mcr.microsoft.com/dotnet/sdk:10.0\nWORKDIR /app\nCOPY . .\n"
+                      "RUN dotnet publish -c Release -o /out 2>/dev/null || true\n"
+                      "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
+        }
+
+        if not df_path.exists():
+            default = DEFAULT_DOCKERFILES.get("$(params.language)")
+            if default:
+                print(f"No Dockerfile at {df_path} -- generating default for $(params.language)")
+                df_path.write_text(default)
+            else:
+                print(f"ERROR: Dockerfile not found at {df_path}")
+                sys.exit(1)
+
+        lines = df_path.read_text().splitlines()
+        from_count = sum(1 for l in lines if re.match(r'^\s*FROM\s+', l, re.I))
+        if from_count > 1:
+            print(f"  Multi-stage build ({from_count} FROM stages) -- no pre-existing artifacts required.")
+            ignore_path = source_dir / ".dockerignore"
+            additions = ["obj/", "bin/", "target/", "build/libs/", "dist/", ".next/",
+                         "__pycache__/", "*.pyc", ".git/"]
+            existing = ignore_path.read_text() if ignore_path.exists() else ""
+            new_lines = [e for e in additions if e not in existing]
+            if new_lines:
+                with ignore_path.open("a") as f:
+                    f.write("\n# gitops-platform: exclude pipeline build artifacts\n")
+                    f.write("\n".join(new_lines) + "\n")
+                print(f"  Added {len(new_lines)} entries to .dockerignore")
+            sys.exit(0)
+
+        print("  Single-stage build -- checking COPY sources:")
+        missing, found = [], []
+        for line in lines:
+            line = line.strip()
+            if re.match(r'^COPY\s+--from=', line, re.I):
+                continue
+            m = re.match(r'^COPY\s+(.+)$', line, re.I)
+            if not m:
+                continue
+            parts = m.group(1).split()
+            for src in parts[:-1]:
+                if src.startswith('--'):
+                    continue
+                src_clean = src.lstrip('./')
+                if '*' in src_clean or '?' in src_clean:
+                    matches = list(source_dir.glob(src_clean))
+                    (found if matches else missing).append(
+                        f"  {'OK' if matches else 'MISSING'} {src}")
+                else:
+                    full = source_dir / src_clean
+                    if full.exists():
+                        found.append(f"  OK {src}  ({full.stat().st_size // 1024} KB)")
+                    else:
+                        candidates = list(source_dir.rglob(f"*{pathlib.Path(src_clean).name}*"))
+                        hint = f"  -> did you mean: {candidates[0].relative_to(source_dir)} ?" if candidates else ""
+                        missing.append(f"  MISSING {src}{hint}")
+
+        for f in found: print(f)
+        if missing:
+            print("\nERROR: Dockerfile COPY sources missing:")
+            for m in missing: print(m)
+            sys.exit(1)
+        print(f"\nAll {len(found)} COPY source(s) verified OK")
+
+---
+# Hadolint -- Dockerfile lint -- own pod, onError:continue in the pipeline.
+# Runs in parallel with the Kaniko build after pre-build passes so findings
+# land in scan-results without adding to the critical path.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-hadolint
+  namespace: tekton-pipelines
+  labels:
+    gitops-platform.io/stage: build
+spec:
+  params:
+    - name: dockerfile-path
+      default: "./Dockerfile"
+  workspaces:
+    - name: source
+    - name: results
+  steps:
+    - name: hadolint
+      image: k8secops/k8secops:hadolint-v2.12.0-debian
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        mkdir -p $(workspaces.results.path)/dockerfile-lint
+        DF_REL=$(echo "$(params.dockerfile-path)" | sed 's|^\./||')
+        DF="$(workspaces.source.path)/$DF_REL"
+        OUT="$(workspaces.results.path)/dockerfile-lint/hadolint.json"
+        echo "Hadolint: $DF"
+        hadolint "$DF" -f json > "$OUT" 2>/dev/null || true
+        COUNT=$(grep -o '"code"' "$OUT" 2>/dev/null | wc -l | tr -d ' ')
+        echo "Findings: ${COUNT:-0}  ->  dockerfile-lint/hadolint.json"
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
   name: gitops-build-image-local
   namespace: tekton-pipelines
   labels:
@@ -2241,253 +2441,18 @@ spec:
   workspaces:
     - name: source
     - name: image-tar
-    - name: results
     - name: kaniko-cache
     - name: registry-credentials
-      description: "Docker config.json for authenticating base image pulls from Docker Hub"
+      description: Docker config.json for authenticating base image pulls from Docker Hub
   results:
     - name: IMAGE_TAR_PATH
     - name: IMAGE_FULL_REF
   steps:
-    #  Step 1: Verify artifacts from compile stage 
-    # The dedicated compile stage (gitops-lang-compile) already ran mvn package
-    # before this task. We just confirm the artifacts are present so Kaniko
-    # doesn't silently build a broken image.
-    - name: verify-artifacts
-      image: k8secops/k8secops:python-3.12-slim
-      workingDir: $(workspaces.source.path)
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      script: |
-        #!/usr/bin/env python3
-        import subprocess, pathlib, sys
-
-        build_tool = "$(params.build-tool)"
-        source_dir = pathlib.Path("$(workspaces.source.path)")
-
-        if build_tool in ("maven", "gradle"):
-            jars = [p for p in source_dir.rglob("*.jar")
-                    if ".m2" not in str(p) and "test-classes" not in str(p)
-                    and "original-" not in p.name]
-            if not jars:
-                print("ERROR: No JAR found  compile stage may have failed.")
-                print("       Expected mvn/gradle artifacts in target/ or build/libs/")
-                sys.exit(1)
-            print(" Build artifacts ready for Kaniko: ")
-            for j in sorted(jars):
-                size_kb = j.stat().st_size // 1024
-                print(f"  {size_kb} KB  {j.relative_to(source_dir)}")
-        elif build_tool in ("npm",):
-            dist = source_dir / "dist"
-            build = source_dir / "build"
-            if not dist.exists() and not build.exists():
-                print("WARN: No dist/ or build/ directory found for npm project")
-                print("      Kaniko will include full source  ensure Dockerfile handles this")
-            else:
-                print(" npm build output ready ")
-        else:
-            print(f" build-tool={build_tool}: artifacts managed by Dockerfile ")
-
-    #  Step 2: Validate Dockerfile COPY instructions 
-    # Parses the Dockerfile, finds every COPY source, checks it exists.
-    # Fails with a clear message if sources are missing so Kaniko doesn't
-    # produce a silently broken image.
-    - name: validate-dockerfile
-      image: k8secops/k8secops:python-3.12-slim
-      workingDir: $(workspaces.source.path)
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      script: |
-        #!/usr/bin/env python3
-        import re, pathlib, sys, fnmatch
-
-        source_dir = pathlib.Path("$(workspaces.source.path)")
-        df_rel     = "$(params.dockerfile-path)".lstrip("./")
-        df_path    = source_dir / df_rel if df_rel else source_dir / "Dockerfile"
-
-        #  Generate a default Dockerfile if the repo doesn't ship one 
-        # Sample/demo repos for non-Java languages often have no Dockerfile.
-        # A generic single-stage Dockerfile lets Kaniko produce a buildable
-        # image without requiring the repo to be containerized.
-        DEFAULT_DOCKERFILES = {
-            "python": "FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\n"
-                      "RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || true\n"
-                      "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
-            "nodejs": "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\n"
-                      "RUN npm install --omit=dev 2>/dev/null || npm install 2>/dev/null || true\n"
-                      "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
-            "go":     "FROM golang:1.22-alpine\nWORKDIR /app\nCOPY . .\n"
-                      "RUN go build ./... 2>/dev/null || true\n"
-                      "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
-            "dotnet": "FROM mcr.microsoft.com/dotnet/sdk:10.0\nWORKDIR /app\nCOPY . .\n"
-                      "RUN dotnet publish -c Release -o /out 2>/dev/null || true\n"
-                      "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
-        }
-
-        if not df_path.exists():
-            default = DEFAULT_DOCKERFILES.get("$(params.language)")
-            if default:
-                print(f"No Dockerfile at {df_path}  generating a default for language=$(params.language)")
-                df_path.write_text(default)
-            else:
-                print(f"ERROR: Dockerfile not found at {df_path}")
-                sys.exit(1)
-
-        print(f" Dockerfile: {df_path} ")
-        lines = df_path.read_text().splitlines()
-
-        # Detect multi-stage build
-        from_count = sum(1 for l in lines if re.match(r'^\s*FROM\s+', l, re.I))
-        is_multistage = from_count > 1
-        if is_multistage:
-            print(f"  Multi-stage build detected ({from_count} FROM stages)")
-            print("  Compile step inside Docker  no pre-existing artifacts required.")
-            # Pipeline compile/test stages leave obj/, bin/, target/, dist/ etc. in the
-            # source workspace. These get picked up by COPY . . and can conflict with
-            # the build running inside the Dockerfile. Ensure .dockerignore excludes them.
-            ignore_path = source_dir / ".dockerignore"
-            additions = [
-                "# gitops-platform: exclude pipeline build artifacts from Docker context",
-                "obj/", "bin/",           # dotnet / C#
-                "target/",                 # Java Maven / Gradle
-                "build/libs/",             # Gradle
-                "dist/", ".next/",         # Node.js
-                "__pycache__/", "*.pyc",   # Python
-                ".git/",
-            ]
-            existing = ignore_path.read_text() if ignore_path.exists() else ""
-            new_lines = [e for e in additions if e not in existing and not e.startswith("#")]
-            if new_lines:
-                with ignore_path.open("a") as f:
-                    f.write("\n" + additions[0] + "\n")
-                    f.write("\n".join(new_lines) + "\n")
-                print(f"  Added {len(new_lines)} entries to .dockerignore (obj/, bin/, target/, etc.)")
-            else:
-                print("  .dockerignore already covers build artifact directories")
-
-            #  Diagnostic: list files that will enter the Docker context 
-            print("\n  Files in Docker context (top 60, excluding known build dirs):")
-            skip = {"obj","bin","target","build","dist",".git","node_modules","__pycache__"}
-            count = 0
-            for p in sorted(source_dir.rglob("*")):
-                if any(part in skip for part in p.parts):
-                    continue
-                if p.is_file():
-                    rel = p.relative_to(source_dir)
-                    size = p.stat().st_size
-                    print(f"    {size:>8}  {rel}")
-                    count += 1
-                    if count >= 60:
-                        print("    ... (truncated)")
-                        break
-
-            sys.exit(0)
-
-        print("  Single-stage build  checking COPY sources exist in workspace:")
-
-        missing, found = [], []
-        for line in lines:
-            line = line.strip()
-            # Skip COPY --from= (copies from another stage, not the build context)
-            if re.match(r'^COPY\s+--from=', line, re.I):
-                continue
-            m = re.match(r'^COPY\s+(.+)$', line, re.I)
-            if not m:
-                continue
-            parts = m.group(1).split()
-            # Last part is destination; everything before it is source
-            srcs = parts[:-1] if len(parts) > 1 else []
-            for src in srcs:
-                if src.startswith('--'):
-                    continue
-                src_clean = src.lstrip('./')
-                # Glob support
-                if '*' in src_clean or '?' in src_clean:
-                    matches = list(source_dir.glob(src_clean))
-                    if matches:
-                        sizes = [f"{p.stat().st_size//1024}KB  {p.relative_to(source_dir)}" for p in matches[:3]]
-                        found.append(f"   {src}    {', '.join(sizes)}")
-                    else:
-                        missing.append(f"   {src}  (no files match glob)")
-                else:
-                    full = source_dir / src_clean
-                    if full.exists():
-                        size = full.stat().st_size // 1024
-                        found.append(f"   {src}  ({size} KB)")
-                    else:
-                        # Suggest closest match
-                        name = pathlib.Path(src_clean).name
-                        candidates = list(source_dir.rglob(f"*{name}*"))
-                        hint = ""
-                        if candidates:
-                            rel = candidates[0].relative_to(source_dir)
-                            hint = f"   did you mean: {rel} ?"
-                        missing.append(f"   {src}   not found{hint}")
-
-        for f in found:
-            print(f)
-        if missing:
-            print("\nERROR: Dockerfile COPY sources missing from build context:")
-            for m in missing:
-                print(m)
-            print("\nFix: update your Dockerfile's COPY paths to match the actual")
-            print("build output, or use a multi-stage Dockerfile.")
-            sys.exit(1)
-
-        print(f"\nAll {len(found)} COPY source(s) verified ")
-
-    #  Step 2b: Hadolint  Dockerfile lint 
-    - name: hadolint
-      image: k8secops/k8secops:hadolint-v2.12.0-debian
-      workingDir: $(workspaces.source.path)
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      script: |
-        #!/bin/sh
-        set -e
-        mkdir -p $(workspaces.results.path)/dockerfile-lint
-        DF_REL=$(echo "$(params.dockerfile-path)" | sed 's|^\./||')
-        DF="$(workspaces.source.path)/$DF_REL"
-        OUT="$(workspaces.results.path)/dockerfile-lint/hadolint.json"
-
-        echo " Hadolint Dockerfile lint "
-        echo "  Dockerfile: $DF"
-
-        hadolint "$DF" -f json > "$OUT" 2>/dev/null || true
-        COUNT=$(grep -o '"code"' "$OUT" 2>/dev/null | wc -l | tr -d ' ')
-        SIZE=$(du -sh "$OUT" 2>/dev/null | cut -f1 || echo "0B")
-        echo "Hadolint findings: ${COUNT:-0}"
-        echo "Report: dockerfile-lint/hadolint.json  ($SIZE, ${COUNT:-0} findings)"
-
-    #  Step 3: Kaniko  build image and save as Docker archive 
-    # Kaniko builds Dockerfiles inside a container without Docker daemon or
-    # privileged:true. It unpacks layers into a directory and uses chroot 
-    # no overlayfs, no daemon startup race, works under any PSA policy.
-    # --snapshot-mode=redo handles .NET multi-stage builds correctly without
-    # the nested overlayfs workarounds that BuildKit required.
+    # Kaniko: build image from source and save as tar. No push.
+    # Pre-build checks (verify-artifacts, validate-dockerfile) and
+    # Dockerfile linting (hadolint) run in their own pods before this task.
     - name: build-local
-      image: k8secops/k8secops:k8secops-gitops-builder-1.0.0
+      image: k8secops/k8secops:gitops-builder-1.0.0
       securityContext:
         runAsUser: 0
         allowPrivilegeEscalation: false
@@ -2501,7 +2466,6 @@ spec:
         #!/bin/sh
         set -e
 
-        # Strip leading ./ so paths work as absolute suffixes
         DF="$(params.dockerfile-path)"
         DF="${DF#./}"
         CTX="$(params.context)"
@@ -2511,7 +2475,6 @@ spec:
         echo "Dockerfile:     $(workspaces.source.path)/$DF"
         echo "Context:        $(workspaces.source.path)/$CTX"
 
-        # Build --registry-mirror flag only when a mirror is configured
         MIRROR_FLAG=""
         if [ -n "$(params.registry-mirror)" ]; then
           MIRROR_FLAG="--registry-mirror=$(params.registry-mirror)"
@@ -2527,6 +2490,7 @@ spec:
           --tar-path="$(workspaces.image-tar.path)/image.tar" \
           --snapshot-mode=full \
           --cache-dir="$(workspaces.kaniko-cache.path)" \
+          --cache-ttl=168h \
           --log-format=text \
           --verbosity=info \
           $MIRROR_FLAG
@@ -2534,13 +2498,13 @@ spec:
         echo "Image saved: $(workspaces.image-tar.path)/image.tar"
     - name: record-ref
       image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
         allowPrivilegeEscalation: false
         capabilities:
-          drop:
-            - ALL
+          drop: [ALL]
         seccompProfile:
           type: RuntimeDefault
       env:
@@ -2558,18 +2522,12 @@ spec:
         open("$(results.IMAGE_FULL_REF.path)","w").write(full_ref)
         if not os.path.exists(tar_path):
             print(f"ERROR: image tar not found at {tar_path}")
-            print("Kaniko did not write the tar  check build-local step logs")
             sys.exit(1)
         size_mb = os.path.getsize(tar_path) // 1024 // 1024
-        print(f"Built image: {full_ref}")
-        print(f"Image tar:   {tar_path} ({size_mb} MB)")
-        # Notify operator so the UI can show the built image reference immediately
+        print(f"Built image: {full_ref}  ({size_mb} MB)")
         token   = os.environ.get("OPERATOR_API_TOKEN", "")
-        payload = json.dumps({
-            "runId":    "$(params.pipeline-run-id)",
-            "imageRef": full_ref,
-            "sizeMb":   size_mb,
-        }).encode()
+        payload = json.dumps({"runId": "$(params.pipeline-run-id)",
+                               "imageRef": full_ref, "sizeMb": size_mb}).encode()
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -3564,9 +3522,11 @@ spec:
       default: "pom.xml"
   workspaces:
     - name: source
+    - name: maven-cache
+      optional: true
+      description: Persistent Maven local repository cache (~/.m2). Shared across runs to avoid re-downloading dependencies.
   steps:
     - name: compile
-      # Use the JDK version the user selected  not hardcoded to 21
       image: k8secops/k8secops:maven-3.9-eclipse-temurin-$(params.build-version)
       imagePullPolicy: IfNotPresent
       workingDir: $(workspaces.source.path)
@@ -3598,8 +3558,13 @@ spec:
 
         mkdir -p "$HOME/.m2" "$GRADLE_USER_HOME"
 
-        # Maven local repo  workspace so uid 1000 can write to it
-        MVN_REPO="$(workspaces.source.path)/.m2/repository"
+        # Use persistent cache PVC if mounted, otherwise fall back to source workspace
+        if [ "$(workspaces.maven-cache.bound)" = "true" ]; then
+          MVN_REPO="$(workspaces.maven-cache.path)/repository"
+          mkdir -p "$MVN_REPO"
+        else
+          MVN_REPO="$(workspaces.source.path)/.m2/repository"
+        fi
         MVN_FLAGS="-Dmaven.repo.local=$MVN_REPO -DskipTests -B"
 
         case "$BUILD_TOOL" in

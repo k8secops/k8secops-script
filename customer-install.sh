@@ -138,14 +138,18 @@ kubectl label namespace "$NS_TEKTON" \
 #                                   raises "more than one PersistentVolumeClaim is bound".
 kubectl patch configmap feature-flags -n "$NS_TEKTON" \
   --type merge \
-  -p '{"data":{"set-security-context":"true","disable-affinity-assistant":"true"}}' >/dev/null
+  -p '{"data":{"set-security-context":"true","coschedule":"disabled","running-in-environment-with-injected-sidecars":"false"}}' >/dev/null
+# coschedule=disabled: Tekton v1.x replacement for disable-affinity-assistant.
+# running-in-environment-with-injected-sidecars=false: prevents prepare init
+# container from hanging indefinitely waiting for a service mesh sidecar.
+info "Tekton feature flags applied"
 
-# Restart the controller so it picks up the new feature flags immediately.
-# The configmap is read at startup — patching alone is not enough.
-kubectl rollout restart deployment/tekton-pipelines-controller -n "$NS_TEKTON" >/dev/null
-kubectl rollout status  deployment/tekton-pipelines-controller -n "$NS_TEKTON" \
-  --timeout=120s >/dev/null
-info "Tekton feature flags applied and controller restarted"
+# Tekton's prepare init container defaults to 32Mi — too low for credential
+# init on tasks with large scripts (SpotBugs, AI aggregate). Raise to 512Mi.
+kubectl patch configmap config-defaults -n "$NS_TEKTON" \
+  --type merge \
+  -p '{"data":{"default-container-resource-requirements":"prepare:\n  requests:\n    memory: \"128Mi\"\n    cpu: \"50m\"\n  limits:\n    memory: \"512Mi\"\n    cpu: \"200m\"\nplace-scripts:\n  requests:\n    memory: \"64Mi\"\n    cpu: \"50m\"\n  limits:\n    memory: \"256Mi\"\n    cpu: \"100m\"\nworking-dir-initializer:\n  requests:\n    memory: \"64Mi\"\n    cpu: \"50m\"\n  limits:\n    memory: \"256Mi\"\n    cpu: \"100m\"\n"}}' >/dev/null
+info "Tekton init-container memory limits raised (prepare: 512Mi)"
 
 # ── Step 3: Sealed Secrets ────────────────────────────────────────────────────
 section "Step 3 — Sealed Secrets ${SEALED_SECRETS_VERSION}"
