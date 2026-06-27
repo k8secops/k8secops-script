@@ -8,11 +8,12 @@
 # What this does:
 #   1. Checks prerequisites (kubectl, helm)
 #   2. Creates platform namespaces + sets Pod Security labels
-#   3. Installs Tekton Pipelines (idempotent — skips if already present)
+#   3. Installs Tekton Pipelines (idempotent -- skips if already present)
 #   4. Installs Sealed Secrets controller
 #   5. Installs the GitOps Platform Helm chart from OCI
 #   6. Applies all 30+ security scanner tasks
-#   7. Waits until every pod is Running and Ready
+#   7. Seeds the OWASP NVD vulnerability database (background)
+#   8. Waits until every pod is Running and Ready
 #
 # Requirements:
 #   kubectl >= 1.28  (configured against the target cluster)
@@ -210,8 +211,34 @@ section "Step 5 — Applying 30+ security scanner tasks"
 kubectl apply -n "$NS_TEKTON" -f "${TEKTON_TASKS_URL}"
 info "Scanner tasks applied"
 
+# ── Step 5.5: Seed NVD vulnerability database ─────────────────────────────────
+# OWASP Dependency-Check requires the NVD database. The nvd-updater CronJob
+# runs daily at 2am to keep it fresh. Trigger an immediate seed here so the
+# first pipeline run finds the database ready.
+# Set NVD_API_KEY env var before running this script for a 5-min seed instead
+# of 30-60 min:  NVD_API_KEY=<key> curl -sfL .../customer-install.sh | bash
+# Free API key: https://nvd.nist.gov/developers/request-an-api-key
+section "Step 5.5 -- Seeding OWASP NVD vulnerability database"
+NVD_UPDATER_CRONJOB="gitops-platform-nvd-updater"
+NVD_SEED_JOB="gitops-platform-nvd-seed"
+if kubectl get cronjob "${NVD_UPDATER_CRONJOB}" -n "$NS_TEKTON" &>/dev/null; then
+  kubectl delete job "${NVD_SEED_JOB}" -n "$NS_TEKTON" --ignore-not-found &>/dev/null || true
+  kubectl create job "${NVD_SEED_JOB}" \
+    --from=cronjob/"${NVD_UPDATER_CRONJOB}" \
+    -n "$NS_TEKTON" &>/dev/null
+  if [[ -n "${NVD_API_KEY:-}" ]]; then
+    info "NVD seed started with API key (expect ~5 min)."
+    info "Monitor: kubectl logs -f job/${NVD_SEED_JOB} -n ${NS_TEKTON}"
+  else
+    info "NVD seed running without API key (30-60 min). Set NVD_API_KEY for faster seeding."
+    info "Monitor: kubectl logs -f job/${NVD_SEED_JOB} -n ${NS_TEKTON}"
+  fi
+else
+  warn "NVD updater CronJob not found -- OWASP scans will skip until database is seeded."
+fi
+
 # ── Step 6: Wait ──────────────────────────────────────────────────────────────
-section "Step 6 — Waiting for all pods to be Running and Ready"
+section "Step 6 -- Waiting for all pods to be Running and Ready"
 
 wait_ns() {
   local ns="$1" timeout="${2:-300}" elapsed=0 total ready lines
@@ -229,9 +256,11 @@ wait_ns() {
 }
 
 FAILED=false
-wait_ns "$NS_CORE"    300 || FAILED=true
-wait_ns "$NS_TOOLING" 600 || FAILED=true
+# Wait in dependency order: DB first, then services that depend on it
+[[ -n "${NS_DB:-}" ]] && { wait_ns "${NS_DB:-gitops-db}" 300 || FAILED=true; }
 wait_ns "$NS_TEKTON"  300 || FAILED=true
+wait_ns "$NS_TOOLING" 600 || FAILED=true
+wait_ns "$NS_CORE"    300 || FAILED=true
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 section "Done"
