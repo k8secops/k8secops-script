@@ -3505,6 +3505,9 @@ spec:
       default: "."
   workspaces:
     - name: source
+    - name: go-cache
+      optional: true
+      description: "Persistent Go module cache (GOPATH/pkg/mod). Shared across runs."
   steps:
     - name: compile
       image: k8secops/k8secops:golang-$(params.build-version)-alpine
