@@ -541,7 +541,9 @@ spec:
                 resp = json.loads(urllib.request.urlopen(req, timeout=10).read())
                 token = resp.get("token", "")
                 auth_hdr = hdr  # use working password for quality gate step too
-                print(f"SonarQube analysis token created: {token_name}")
+                print(f"SonarQube analysis token created: {token_name} (length: {len(token)})")
+                if not token:
+                    print(f"WARNING: token field missing from response: {list(resp.keys())}")
                 break
             except Exception as e:
                 print(f"Token creation failed with password attempt: {e}")
@@ -566,10 +568,12 @@ spec:
         limits:   {cpu: "2000m", memory: "4Gi"}
       script: |
         #!/bin/sh
-        TOKEN=$(cat $(workspaces.results.path)/sonar-token 2>/dev/null || true)
+        TOKEN=$(cat $(workspaces.results.path)/sonar-token 2>/dev/null | tr -d '[:space:]' || true)
+        echo "SonarQube token length: ${#TOKEN}"
         TOKEN_ARG=""
         if [ -n "$TOKEN" ]; then
-          TOKEN_ARG="-Dsonar.token=$TOKEN"
+          # Pass as both sonar.token (9.x+) and sonar.login (all versions) for compatibility
+          TOKEN_ARG="-Dsonar.token=$TOKEN -Dsonar.login=$TOKEN"
         fi
         # -Dsonar.java.binaries=. allows Java analysis without pre-compiled classes;
         # the sensor falls back to source-only analysis instead of EXECUTION FAILURE.
@@ -910,7 +914,7 @@ spec:
     - name: FINDING_COUNT
   steps:
     - name: bandit
-      image: k8secops/k8secops:python-$(params.build-version)-slim
+      image: k8secops/k8secops:python-3.12-slim
       workingDir: $(workspaces.source.path)
       securityContext:
         runAsNonRoot: true
