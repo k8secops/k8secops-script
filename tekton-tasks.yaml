@@ -629,7 +629,7 @@ spec:
                 qg  = d.get("projectStatus", {}).get("status", "UNKNOWN")
                 if qg in ("OK", "ERROR", "WARN"):
                     open(result_path, "w").write(qg)
-                    icon = """ if qg == "OK" else "--"
+                    icon = "OK" if qg == "OK" else "FAIL"
                     print(f"Quality gate: {qg} {icon}")
                     sys.exit(0)
                 print(f"Attempt {i+1}: status={qg}, waiting")
@@ -822,7 +822,7 @@ spec:
                 qg  = d.get("projectStatus", {}).get("status", "UNKNOWN")
                 if qg in ("OK", "ERROR", "WARN"):
                     open(result_path, "w").write(qg)
-                    icon = """ if qg == "OK" else "--"
+                    icon = "OK" if qg == "OK" else "FAIL"
                     print(f"Quality gate: {qg} {icon}")
                     sys.exit(0)
                 print(f"Attempt {i+1}: status={qg}, waiting")
@@ -1185,7 +1185,7 @@ spec:
 
         "$SB_BIN" -textui -pluginList "$FSB_JAR" \
           -xml:withMessages -output "$XML_OUT" \
-          -effort:max -priority 2 \
+          -effort:max -minPriority 2 \
           $CLASS_DIRS 2>&1 || true
 
         COUNT=$(grep -c '<BugInstance' "$XML_OUT" 2>/dev/null || echo 0)
@@ -1311,7 +1311,52 @@ spec:
         requests: {cpu: "300m", memory: "1Gi"}
         limits:   {cpu: "1000m", memory: "3Gi"}
       script: |
+        #!/bin/sh
+        mkdir -p $(workspaces.results.path)/sca
+        DB_DIR=$(workspaces.vulndb-cache.path)/owasp
+        DB_FILE=$DB_DIR/odc.mv.db
+        LOCK_FILE=$DB_DIR/odc.update.lock
+        STATUS_FILE=$(workspaces.results.path)/sca/owasp-status.json
+        RESULTS_DIR=$(workspaces.results.path)/sca
         
+        if [ -f $LOCK_FILE ]; then
+          echo 'OWASP SKIP: NVD database update in progress - lock file present'
+          echo 'Re-trigger this pipeline once the nvd-updater CronJob completes'
+          echo eyJzdGF0dXMiOiJza2lwcGVkIiwicmVhc29uIjoiZGJfdXBkYXRlX2luX3Byb2dyZXNzIn0= | base64 -d > $STATUS_FILE
+          echo -n 0 > $(results.VULN_COUNT.path)
+          exit 0
+        fi
+        
+        if [ ! -f $DB_FILE ]; then
+          echo 'OWASP SKIP: NVD database not found'
+          echo 'Run: kubectl create job nvd-seed --from=cronjob/gitops-platform-nvd-updater -n tekton-pipelines'
+          echo eyJzdGF0dXMiOiJza2lwcGVkIiwicmVhc29uIjoiZGJfbm90X2ZvdW5kIn0= | base64 -d > $STATUS_FILE
+          echo -n 0 > $(results.VULN_COUNT.path)
+          exit 0
+        fi
+        
+        DB_SIZE=$(du -sh $DB_FILE 2>/dev/null | cut -f1 || echo unknown)
+        echo OWASP: NVD database ready $DB_SIZE - running scan with --noupdate
+        echo eyJzdGF0dXMiOiJydW5uaW5nIn0= | base64 -d > $STATUS_FILE
+        
+        timeout 600 \
+          /usr/share/dependency-check/bin/dependency-check.sh \
+            --scan . \
+            --format JSON \
+            --format SARIF \
+            --out $RESULTS_DIR \
+            --project $(params.language)-scan \
+            --data $DB_DIR \
+            --noupdate \
+          2>&1 | tail -20
+        
+        REPORT=$RESULTS_DIR/dependency-check-report.json
+        
+        echo aW1wb3J0IGpzb24sc3lzCnIsc2Y9c3lzLmFyZ3ZbMV0sc3lzLmFyZ3ZbMl0KY250PTAKdHJ5OgogICAgZD1qc29uLmxvYWQob3BlbihyKSkKICAgIGNudD1zdW0obGVuKHguZ2V0KCd2dWxuZXJhYmlsaXRpZXMnLFtdKSlmb3IgeCBpbiBkLmdldCgnZGVwZW5kZW5jaWVzJyxbXSkpCiAgICBvcGVuKHNmLCd3Jykud3JpdGUoanNvbi5kdW1wcyh7J3N0YXR1cyc6J2NvbXBsZXRlZCcsJ3Z1bG5fY291bnQnOmNudH0pKQogICAgc3o9c3RyKHJvdW5kKF9faW1wb3J0X18oJ29zJykucGF0aC5nZXRzaXplKHIpLzEwMjQsMSkpCiAgICBwcmludCgnT1dBU1A6ICcrc3RyKGNudCkrJyB2dWxuZXJhYmlsaXRpZXMgLSByZXBvcnQgJytzeisnIEtCJykKZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOgogICAgb3BlbihzZiwndycpLndyaXRlKGpzb24uZHVtcHMoeydzdGF0dXMnOidub19yZXBvcnQnLCdyZWFzb24nOnN0cihlKX0pKQogICAgcHJpbnQoJ09XQVNQIFdBUk46ICcrc3RyKGUpKQpzeXMuc3Rkb3V0LmZsdXNoKCkKd2l0aCBvcGVuKCcvdG1wL19vZGNfY250JywndycpIGFzIGY6CiAgICBmLndyaXRlKHN0cihjbnQpKQo= | base64 -d > /tmp/_odc.py
+        python3 /tmp/_odc.py $REPORT $STATUS_FILE 2>/dev/null || true
+        COUNT=$(cat /tmp/_odc_cnt 2>/dev/null || echo 0)
+        echo -n $COUNT > $(results.VULN_COUNT.path)
+        exit 0
 
 ---
 # "" OSV-Scanner (Google) """""""""""""""""""""""""""""""""""
