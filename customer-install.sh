@@ -126,6 +126,43 @@ else
   warn "No NVD API key — OWASP seeding will take 30-60 min in the background."
 fi
 
+# ── Docker Hub credentials (for scanner image pulls) ──────────────────────────
+# Scanner images (gitleaks, trivy, grype, semgrep, etc.) are pulled by
+# Kubernetes when scheduling Tekton task pods. Without credentials, Docker Hub
+# limits anonymous pulls to 100/6h per node IP — causing pipeline failures.
+# Provide your Docker Hub username + token to authenticate all scanner pulls.
+# Free Docker Hub account: https://hub.docker.com/settings/security
+echo ""
+echo "  Registry credentials — for pulling pipeline scanner images (gitleaks, trivy, grype...)"
+echo "  Without credentials, Docker Hub limits anonymous pulls to 100/6h per node."
+echo ""
+echo "  Option A: Docker Hub (public images from hub.docker.com)"
+echo "    Get a free access token at: hub.docker.com -> Account Settings -> Security"
+echo ""
+echo "  Option B: Private registry (Harbor, Nexus, ECR, GHCR, Artifactory...)"
+echo "    Mirror scanner images to your registry first: make mirror-images REGISTRY=..."
+echo ""
+if [[ -z "${DOCKERHUB_USERNAME:-}" ]] && [[ -z "${PRIVATE_REGISTRY_SERVER:-}" ]]; then
+  read -rp "  Docker Hub username (Enter to skip, or type 'private' for private registry): " _reg_choice
+  if [[ "${_reg_choice}" == "private" ]]; then
+    read -rp "  Private registry server (e.g. registry.company.com): " PRIVATE_REGISTRY_SERVER
+    read -rp "  Username: " PRIVATE_REGISTRY_USERNAME
+    read -rsp "  Token/password: " PRIVATE_REGISTRY_TOKEN; echo ""
+  elif [[ -n "${_reg_choice}" ]]; then
+    DOCKERHUB_USERNAME="${_reg_choice}"
+    read -rsp "  Docker Hub access token: " DOCKERHUB_TOKEN; echo ""
+  fi
+fi
+if [[ -n "${DOCKERHUB_USERNAME:-}" ]] && [[ -n "${DOCKERHUB_TOKEN:-}" ]]; then
+  info "Docker Hub credentials set — scanner image pulls will be authenticated."
+elif [[ -n "${PRIVATE_REGISTRY_SERVER:-}" ]]; then
+  info "Private registry set (${PRIVATE_REGISTRY_SERVER}) — scanner images will use authenticated pulls."
+else
+  warn "No registry credentials — scanner image pulls will be anonymous (rate-limited to 100/6h)."
+  DOCKERHUB_USERNAME=""
+  DOCKERHUB_TOKEN=""
+fi
+
 # ── Auto-generated credentials ─────────────────────────────────────────────────
 UI_ADMIN_USERNAME="admin"
 OPERATOR_API_TOKEN="${EXISTING_TOKEN:-$(gen_token)}"
@@ -233,6 +270,14 @@ database:
     password: '$(yesc "${DB_PASSWORD}")'
 nvdUpdater:
   nvdApiKey: '$(yesc "${NVD_API_KEY:-}")'
+global:
+  pipelineDockerHub:
+    username: '$(yesc "${DOCKERHUB_USERNAME:-}")'
+    token: '$(yesc "${DOCKERHUB_TOKEN:-}")'
+  pipelineImagePullSecret:
+    server: '$(yesc "${PRIVATE_REGISTRY_SERVER:-}")'
+    username: '$(yesc "${PRIVATE_REGISTRY_USERNAME:-}")'
+    token: '$(yesc "${PRIVATE_REGISTRY_TOKEN:-}")'
 tekton:
   enabled: false
 EOF
