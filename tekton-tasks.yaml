@@ -3662,6 +3662,9 @@ spec:
       default: "."
   workspaces:
     - name: source
+    - name: npm-cache
+      optional: true
+      description: "Persistent npm cache (~/.npm). Shared across runs to avoid re-downloading packages."
   steps:
     - name: compile
       image: k8secops/k8secops:node-$(params.build-version)-alpine
@@ -3683,8 +3686,6 @@ spec:
         # and corepack all write cache/config to $HOME and fail without it.
         - name: HOME
           value: "$(workspaces.source.path)/.compile-home"
-        - name: npm_config_cache
-          value: "$(workspaces.source.path)/.compile-home/.npm"
       script: |
         #!/bin/sh
         set -e
@@ -3692,6 +3693,14 @@ spec:
         echo """ Node.js compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
 
         mkdir -p "$HOME"
+
+        # Use npm-cache PVC when bound, otherwise fall back to source workspace
+        if [ "$(workspaces.npm-cache.bound)" = "true" ]; then
+          export npm_config_cache="$(workspaces.npm-cache.path)/.npm"
+        else
+          export npm_config_cache="$HOME/.npm"
+        fi
+        mkdir -p "$npm_config_cache"
 
         case "$BUILD_TOOL" in
           npm)
