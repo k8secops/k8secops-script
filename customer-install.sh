@@ -88,6 +88,10 @@ OPERATOR_API_TOKEN="${EXISTING_TOKEN:-$(gen_token)}"
 UI_ADMIN_PASSWORD="${UI_ADMIN_PASSWORD:-${EXISTING_UI_PWD:-admin}}"
 SONARQUBE_PASSWORD="$(gen_token | head -c 16)"
 DB_PASSWORD="${EXISTING_DB_PWD:-$(gen_token | head -c 24)}"
+# Stable JWT signing key — persists across operator restarts so sessions survive upgrades
+EXISTING_SECRET_KEY=$(kubectl get secret gitops-platform-secrets -n "${NS_CORE}" \
+  -o jsonpath='{.data.secretKey}' 2>/dev/null | base64 -d 2>/dev/null || true)
+SECRET_KEY="${EXISTING_SECRET_KEY:-$(gen_token)}"
 
 info "Credentials generated (printed at end)"
 
@@ -176,6 +180,7 @@ trap 'rm -f "${TMP_VALUES}"' EXIT
 cat > "${TMP_VALUES}" <<EOF
 operator:
   apiToken: '$(yesc "${OPERATOR_API_TOKEN}")'
+  secretKey: '$(yesc "${SECRET_KEY}")'
 ui:
   auth:
     username: '$(yesc "${UI_ADMIN_USERNAME}")'
@@ -185,6 +190,8 @@ sonarqube:
 database:
   internal:
     password: '$(yesc "${DB_PASSWORD}")'
+nvdUpdater:
+  nvdApiKey: '$(yesc "${NVD_API_KEY:-}")'
 tekton:
   enabled: false
 EOF
