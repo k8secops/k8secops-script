@@ -282,6 +282,13 @@ tekton:
   enabled: false
 EOF
 
+# Pre-flight: remove any orphaned Helm-managed SAs left by a previous partial
+# uninstall. Without this, a fresh 'helm install' fails with "already exists"
+# because the SA exists but is no longer tracked by any Helm release.
+if ! helm status gitops-platform -n "${NS_CORE}" &>/dev/null 2>&1; then
+  kubectl delete sa gitops-pipeline-sa -n "${NS_TEKTON}" --ignore-not-found 2>/dev/null || true
+fi
+
 helm upgrade --install gitops-platform "${CHART_OCI}" \
   --version "${CHART_VERSION}" \
   --namespace "${NS_CORE}" --create-namespace \
