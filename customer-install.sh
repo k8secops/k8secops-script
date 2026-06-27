@@ -303,6 +303,20 @@ info "Helm chart installed"
 info "Waiting for PostgreSQL to be ready (may take 60-90s on first install)..."
 kubectl rollout status statefulset/gitops-platform-postgresql \
   -n gitops-db --timeout=180s >/dev/null
+
+# ── Reconcile PostgreSQL password ────────────────────────────────────────────
+# When the PostgreSQL PVC is reused from a previous install the data directory
+# already has an old password. POSTGRES_PASSWORD is only honoured on first init.
+# Extract the password Helm put in the secret and force-set it via local socket
+# (which uses trust auth inside the pod) so the operator can connect.
+DB_URL=$(kubectl get secret gitops-db-credentials -n "${NS_CORE}" \
+  -o jsonpath='{.data.database-url}' 2>/dev/null | base64 -d)
+DB_PASS=$(python3 -c "u='${DB_URL}'; print(u.split('://')[1].split('@')[0].split(':')[1])" 2>/dev/null)
+if [[ -n "${DB_PASS}" ]]; then
+  kubectl exec -n "${NS_DB}" statefulset/gitops-platform-postgresql -- \
+    psql -U gitops -d gitops_platform -c "ALTER USER gitops WITH PASSWORD '${DB_PASS}';" \
+    >/dev/null 2>&1 && info "PostgreSQL password reconciled" || warn "Password reconcile skipped (harmless on fresh DB)"
+fi
 info "PostgreSQL ready"
 
 # ── Step 5: Scanner tasks ─────────────────────────────────────────────────────
