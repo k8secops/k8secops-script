@@ -3782,16 +3782,18 @@ spec:
         fi
 
         # Syntax validation -- catches import errors and syntax mistakes early.
-        # PYTHONDONTWRITEBYTECODE=1 suppresses __pycache__ creation so the
-        # task does not fail on permission-denied errors in read-only dirs.
+        # PYTHONPYCACHEPREFIX redirects bytecode writes to /tmp so py_compile
+        # never tries to create __pycache__ dirs in the (possibly read-only) source tree.
         echo """ Syntax check """
+        mkdir -p /tmp/pycache
         find . -name "*.py" \
           -not -path "./.git/*" \
           -not -path "./node_modules/*" \
           -not -path "./*venv*/*" \
           -not -path "./.compile-home/*" \
-          -not -path "./__pycache__/*" \
-          | PYTHONDONTWRITEBYTECODE=1 xargs python -m py_compile 2>&1 \
+          -not -path "*/__pycache__/*" \
+          -not -path "*/__pycache__" \
+          | PYTHONPYCACHEPREFIX=/tmp/pycache xargs python -m py_compile 2>&1 \
           && echo "All .py files syntax-valid"
 
         echo """ Python compile complete """
