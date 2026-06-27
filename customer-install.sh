@@ -66,34 +66,75 @@ if ! kubectl cluster-info &>/dev/null; then
   exit 1
 fi
 
-info "Cluster : $(kubectl config current-context)"
+CLUSTER_CTX=$(kubectl config current-context)
+info "Cluster : ${CLUSTER_CTX}"
 info "Chart   : ${CHART_OCI}:${CHART_VERSION}"
+echo ""
+read -rp "  Install GitOps Platform on '${CLUSTER_CTX}'? [y/N]: " _confirm
+[[ "${_confirm,,}" == "y" ]] || { echo "Aborted."; exit 0; }
 
-# ── Credentials — auto-generated, printed at end ──────────────────────────────
-section "Generating credentials"
+# ── Setup — collect all inputs before touching the cluster ────────────────────
+section "Setup"
 
+# Reuse existing credentials on re-install
 EXISTING_TOKEN=$(kubectl get secret gitops-platform-secrets -n "${NS_CORE}" \
   -o jsonpath='{.data.operatorApiToken}' 2>/dev/null | base64 -d 2>/dev/null || true)
 EXISTING_UI_PWD=$(kubectl get secret gitops-platform-secrets -n "${NS_CORE}" \
   -o jsonpath='{.data.uiAdminPassword}' 2>/dev/null | base64 -d 2>/dev/null || true)
-# Reuse existing DB password — PostgreSQL data directory is initialised with it;
-# using a new password on re-install causes "password authentication failed".
 EXISTING_DB_PWD=$(kubectl get secret gitops-db-internal -n gitops-db \
   -o jsonpath='{.data.POSTGRES_PASSWORD}' 2>/dev/null | base64 -d 2>/dev/null || true)
-
-UI_ADMIN_USERNAME="admin"
-OPERATOR_API_TOKEN="${EXISTING_TOKEN:-$(gen_token)}"
-# Default password is 'admin' — change it after first login via the UI.
-# Override before install: UI_ADMIN_PASSWORD=mypassword curl -sfL .../customer-install.sh | bash
-UI_ADMIN_PASSWORD="${UI_ADMIN_PASSWORD:-${EXISTING_UI_PWD:-admin}}"
-SONARQUBE_PASSWORD="$(gen_token | head -c 16)"
-DB_PASSWORD="${EXISTING_DB_PWD:-$(gen_token | head -c 24)}"
-# Stable JWT signing key — persists across operator restarts so sessions survive upgrades
 EXISTING_SECRET_KEY=$(kubectl get secret gitops-platform-secrets -n "${NS_CORE}" \
   -o jsonpath='{.data.secretKey}' 2>/dev/null | base64 -d 2>/dev/null || true)
+
+# ── UI admin password ──────────────────────────────────────────────────────────
+if [[ -n "${EXISTING_UI_PWD:-}" ]]; then
+  info "Re-install detected — reusing existing UI password."
+  UI_ADMIN_PASSWORD="${EXISTING_UI_PWD}"
+elif [[ -n "${UI_ADMIN_PASSWORD:-}" ]]; then
+  info "UI_ADMIN_PASSWORD set via environment."
+else
+  echo ""
+  echo "  Set the admin password for the platform UI (min 8 characters):"
+  while true; do
+    read -rsp "    Password: " UI_ADMIN_PASSWORD; echo ""
+    if [[ ${#UI_ADMIN_PASSWORD} -lt 8 ]]; then
+      warn "Password must be at least 8 characters. Try again."
+      continue
+    fi
+    read -rsp "    Confirm : " _confirm_pwd; echo ""
+    if [[ "$UI_ADMIN_PASSWORD" != "$_confirm_pwd" ]]; then
+      warn "Passwords do not match. Try again."
+    else
+      break
+    fi
+  done
+fi
+
+# ── NVD API key ────────────────────────────────────────────────────────────────
+echo ""
+echo "  OWASP Dependency-Check requires the NVD vulnerability database."
+echo "  An API key reduces the initial download from 30-60 min to ~5 min."
+echo "  Get a FREE key at: https://nvd.nist.gov/developers/request-an-api-key"
+echo ""
+if [[ -z "${NVD_API_KEY:-}" ]]; then
+  read -rsp "  NVD API key (press Enter to skip — download will be slow): " NVD_API_KEY
+  echo ""
+fi
+if [[ -n "${NVD_API_KEY:-}" ]]; then
+  info "NVD API key provided — OWASP database will seed in ~5 min."
+else
+  warn "No NVD API key — OWASP seeding will take 30-60 min in the background."
+fi
+
+# ── Auto-generated credentials ─────────────────────────────────────────────────
+UI_ADMIN_USERNAME="admin"
+OPERATOR_API_TOKEN="${EXISTING_TOKEN:-$(gen_token)}"
+SONARQUBE_PASSWORD="$(gen_token | head -c 20)"
+DB_PASSWORD="${EXISTING_DB_PWD:-$(gen_token | head -c 24)}"
 SECRET_KEY="${EXISTING_SECRET_KEY:-$(gen_token)}"
 
-info "Credentials generated (printed at end)"
+echo ""
+info "Setup complete — proceeding with installation."
 
 # ── Step 1: Namespaces ────────────────────────────────────────────────────────
 section "Step 1 — Namespaces"
@@ -228,6 +269,7 @@ info "Scanner tasks applied"
 section "Step 5.5 -- Seeding OWASP NVD vulnerability database"
 NVD_UPDATER_CRONJOB="gitops-platform-nvd-updater"
 NVD_SEED_JOB="gitops-platform-nvd-seed"
+NVD_SEED_JOB="${NVD_SEED_JOB}"  # ensure variable is set for Done section
 if kubectl get cronjob "${NVD_UPDATER_CRONJOB}" -n "$NS_TEKTON" &>/dev/null; then
   kubectl delete job "${NVD_SEED_JOB}" -n "$NS_TEKTON" --ignore-not-found &>/dev/null || true
   kubectl create job "${NVD_SEED_JOB}" \
@@ -277,21 +319,36 @@ section "Done"
   || info "All pods Running and Ready"
 
 echo ""
-echo "  ┌─────────────────────────────────────────────┐"
-echo "  │          GitOps Platform is ready            │"
-echo "  └─────────────────────────────────────────────┘"
 echo ""
-echo "  Access the UI:"
+echo "  ┌──────────────────────────────────────────────────────┐"
+echo "  │         GitOps Platform is ready!                    │"
+echo "  └──────────────────────────────────────────────────────┘"
+echo ""
+echo "  ── Access ──────────────────────────────────────────────"
 echo "    kubectl port-forward svc/gitops-operator -n ${NS_CORE} 8080:8080"
 echo "    open http://localhost:8080"
 echo ""
-echo "  Login credentials:"
-echo "    Username : ${UI_ADMIN_USERNAME}"
-echo "    Password : ${UI_ADMIN_PASSWORD}"
+echo "  ── Login credentials ───────────────────────────────────"
+echo "    Username         : ${UI_ADMIN_USERNAME}"
+echo "    Password         : ${UI_ADMIN_PASSWORD}"
 echo ""
-echo "  API token (save this securely):"
-echo "    ${OPERATOR_API_TOKEN}"
+echo "  ── SonarQube admin (internal SAST) ─────────────────────"
+echo "    URL              : http://<node-ip>:9000  (gitops-tooling namespace)"
+echo "    Username         : admin"
+echo "    Password         : ${SONARQUBE_PASSWORD}"
 echo ""
-echo "  To uninstall:"
+echo "  ── OWASP NVD database ──────────────────────────────────"
+if [[ -n "${NVD_API_KEY:-}" ]]; then
+echo "    Status           : Seeding with API key (~5 min)"
+echo "    Monitor          : kubectl logs -f job/${NVD_SEED_JOB} -n ${NS_TEKTON}"
+else
+echo "    Status           : Seeding without API key (30-60 min background)"
+echo "    Monitor          : kubectl logs -f job/${NVD_SEED_JOB} -n ${NS_TEKTON}"
+fi
+echo ""
+echo "  ── Save securely ───────────────────────────────────────"
+echo "    Operator API token: ${OPERATOR_API_TOKEN}"
+echo ""
+echo "  ── To uninstall ────────────────────────────────────────"
 echo "    curl -sfL https://raw.githubusercontent.com/k8secops/k8secops-script/main/customer-uninstall.sh | bash"
 echo ""

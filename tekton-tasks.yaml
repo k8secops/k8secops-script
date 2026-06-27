@@ -305,7 +305,7 @@ spec:
         mkdir -p $(workspaces.results.path)/iac
         OUT="$(workspaces.results.path)/iac/$(params.output-name).sarif"
 
-        echo " Checkov scan "
+        echo "-- Checkov scan --"
         echo "  Frameworks: $(params.frameworks)"
         echo "  Directory : $(workspaces.source.path)"
         echo "  Output    : $OUT"
@@ -498,9 +498,17 @@ spec:
         import urllib.request, urllib.parse, time, sys, json, os, base64
 
         base_url   = "$(params.sonarqube-url)"
-        admin_pass = os.environ.get("SONAR_ADMIN_PASSWORD", "admin")
-        creds      = base64.b64encode(f"admin:{admin_pass}".encode()).decode()
-        auth_hdr   = {"Authorization": f"Basic {creds}"}
+        configured_pass = os.environ.get("SONAR_ADMIN_PASSWORD", "admin")
+
+        # On fresh install SonarQube always starts with admin/admin.
+        # Try the configured password first; fall back to "admin" if 401.
+        # This lets the first pipeline run succeed even before the password
+        # has been changed by the post-install job.
+        def make_auth(password):
+            creds = base64.b64encode(f"admin:{password}".encode()).decode()
+            return {"Authorization": f"Basic {creds}"}
+
+        auth_hdr = make_auth(configured_pass)
 
         # Wait for SonarQube to be UP
         for i in range(40):
@@ -519,20 +527,27 @@ spec:
         # Generate a short-lived analysis token for this pipeline run
         token_name = f"tekton-$(params.project-key)-{int(time.time())}"
         data = urllib.parse.urlencode({"name": token_name, "login": "admin"}).encode()
-        try:
-            req = urllib.request.Request(
-                f"{base_url}/api/user_tokens/generate",
-                data=data,
-                headers={**auth_hdr, "Content-Type": "application/x-www-form-urlencoded"},
-                method="POST",
-            )
-            resp = json.loads(urllib.request.urlopen(req, timeout=10).read())
-            token = resp.get("token", "")
-            open("$(workspaces.results.path)/sonar-token", "w").write(token)
-            print(f"SonarQube analysis token created: {token_name}")
-        except Exception as e:
-            print(f"Token creation failed: {e} -- scan will be unauthenticated")
-            open("$(workspaces.results.path)/sonar-token", "w").write("")
+        token = ""
+        # Try configured password first; if 401 fall back to default "admin" (fresh install)
+        for try_pass in ([configured_pass] if configured_pass != "admin" else ["admin"]) + (["admin"] if configured_pass != "admin" else []):
+            try:
+                hdr = make_auth(try_pass)
+                req = urllib.request.Request(
+                    f"{base_url}/api/user_tokens/generate",
+                    data=data,
+                    headers={**hdr, "Content-Type": "application/x-www-form-urlencoded"},
+                    method="POST",
+                )
+                resp = json.loads(urllib.request.urlopen(req, timeout=10).read())
+                token = resp.get("token", "")
+                auth_hdr = hdr  # use working password for quality gate step too
+                print(f"SonarQube analysis token created: {token_name}")
+                break
+            except Exception as e:
+                print(f"Token creation failed with password attempt: {e}")
+        open("$(workspaces.results.path)/sonar-token", "w").write(token)
+        if not token:
+            print("Could not create token -- scan will run unauthenticated")
 
     - name: sonar-scan
       image: k8secops/k8secops:sonar-scanner-cli-5.0.1
@@ -1158,6 +1173,7 @@ spec:
           curl -sL "https://github.com/spotbugs/spotbugs/releases/download/4.8.3/spotbugs-4.8.3.tgz" \
             -o "$SB_TGZ"
           tar xzf "$SB_TGZ" -C "$CACHE"
+          chmod -R +x "$CACHE"/spotbugs-*/bin/ 2>/dev/null || true
         fi
         if [ ! -f "$FSB_JAR" ]; then
           curl -sL "https://github.com/find-sec-bugs/find-sec-bugs/releases/download/version-1.13.0/findsecbugs-plugin-1.13.0.jar" \
@@ -2563,7 +2579,7 @@ spec:
         IMAGE_REF="$(params.image-ref)"
         TAR_SIZE=$(du -sh "$TAR" 2>/dev/null | cut -f1 || echo "?")
 
-        echo " Trivy image scan "
+        echo "-- Trivy image scan --"
         echo "  Image : ${IMAGE_REF:-<unknown>}"
         echo "  Tar   : $TAR ($TAR_SIZE)"
         echo "  Rules : $(params.severity)"
@@ -2641,7 +2657,7 @@ spec:
         mkdir -p $(workspaces.vulndb-cache.path)/grype/tmp $(workspaces.vulndb-cache.path)/grype/db
         TAR="$(workspaces.image-tar.path)/image.tar"
         TAR_SIZE=$(du -sh "$TAR" 2>/dev/null | cut -f1 || echo "?")
-        echo " Grype image scan "
+        echo "-- Grype image scan --"
         echo "  Image : $(params.image-ref)"
         echo "  Tar   : $TAR ($TAR_SIZE)"
 
@@ -2752,7 +2768,7 @@ spec:
         mkdir -p $(workspaces.results.path)/sbom $(workspaces.results.path)/.syft-cache
         TAR="$(workspaces.image-tar.path)/image.tar"
         TAR_SIZE=$(du -sh "$TAR" 2>/dev/null | cut -f1 || echo "?")
-        echo " Syft SBOM generation "
+        echo "-- Syft SBOM generation --"
         echo "  Image : $(params.image-ref)"
         echo "  Tar   : $TAR ($TAR_SIZE)"
 
@@ -3780,7 +3796,7 @@ spec:
         BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
 
-        echo " Compile stage   build-tool=$BUILD_TOOL"
+        echo "-- Compile stage --  build-tool=$BUILD_TOOL"
 
         case "$BUILD_TOOL" in
           maven)
@@ -3922,7 +3938,7 @@ spec:
         OUT="$(workspaces.results.path)/malware/clamav.txt"
         TAR_SIZE=$(du -sh "$TAR" 2>/dev/null | cut -f1 || echo "?")
 
-        echo " ClamAV malware scan "
+        echo "-- ClamAV malware scan --"
         echo "  Image : $(params.image-ref)"
         echo "  Tar   : $TAR ($TAR_SIZE)"
         echo ""
@@ -3999,7 +4015,442 @@ spec:
               name: gitops-operator-token
               key: operatorApiToken
       script: |
+        #!/usr/bin/env python3
+        import json, os, re, pathlib, sys, time, urllib.request, urllib.error, urllib.parse
         
+        sys.stdout.reconfigure(line_buffering=True)
+        
+        def _sanitize(s):
+            return "".join(c for c in (s or "").strip() if c.isprintable() and c not in "\r\n\t\x00")
+        
+        AI_PROVIDER = AI_API_KEY = AI_MODEL = ""
+        try:
+            _creds = pathlib.Path("$(workspaces.ai-credentials.path)")
+            AI_PROVIDER = _sanitize((_creds / "aiProvider").read_text())
+            AI_API_KEY  = _sanitize((_creds / "aiApiKey").read_text())
+            _mf = _creds / "aiModel"
+            AI_MODEL = _sanitize(_mf.read_text()) if _mf.exists() else ""
+            if not AI_MODEL:
+                AI_MODEL = {
+                    "anthropic": "claude-haiku-4-5-20251001",
+                    "openai":    "gpt-4o-mini",
+                    "gemini":    "gemini-2.0-flash",
+                }.get(AI_PROVIDER, "")
+        except Exception as e:
+            print(f"Credentials: {e}")
+        
+        IN_DIR   = pathlib.Path("$(workspaces.ai-results.path)")
+        OPERATOR = "$(params.operator-api-url)"
+        RUN_ID   = "$(params.pipeline-run-id)"
+        API_TOKEN = os.environ.get("OPERATOR_API_TOKEN", "")
+        
+        # Emergency fallback: always post something to the operator even if the
+        # aggregate crashes mid-way. sys.excepthook fires on any uncaught exception.
+        # Uses only single-quote strings to avoid Edit-tool smart-quote corruption.
+        def _emergency_fallback(exc_type, exc_val, exc_tb):
+            import traceback as _tb
+            _tb.print_exception(exc_type, exc_val, exc_tb)
+            minimal = {
+                'verdict': 'PROCEED_WITH_CAUTION',
+                'riskGrade': 'UNKNOWN',
+                'recommendation': 'AI analysis error: ' + str(exc_val) + '. Review scan logs manually.',
+                'executiveSummary': 'AI aggregate task encountered an error. Scan logs are still available for manual review.',
+                'findings': [],
+                'allFindings': [],
+                'scanGaps': [{'tool': 'ai-aggregate', 'label': 'AI Analysis', 'reason': 'Aggregate error: ' + str(exc_val)}],
+                'summaryCounts': {'critical': 0, 'high': 0, 'medium': 0, 'low': 0},
+                'ran': False,
+            }
+            try:
+                _data = json.dumps(minimal).encode()
+                _req = urllib.request.Request(
+                    OPERATOR + '/api/v1/pipelines/' + RUN_ID + '/ai-report',
+                    data=_data,
+                    headers={'Authorization': 'Bearer ' + API_TOKEN, 'Content-Type': 'application/json'},
+                    method='POST',
+                )
+                with urllib.request.urlopen(_req, timeout=30) as _r:
+                    _r.read()
+                print('Emergency fallback report posted to operator')
+                open('$(results.REPORT_POSTED.path)', 'w').write('true')
+            except Exception as _pe:
+                print('Emergency post also failed: ' + str(_pe))
+                open('$(results.REPORT_POSTED.path)', 'w').write('false')
+        sys.excepthook = _emergency_fallback
+        
+        SEV_ORDER = {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"INFO":4,"UNKNOWN":5}
+        
+        #  Read all category results 
+        categories = {}
+        for cat in ("secrets", "sast", "sca", "image", "tests"):
+            fp = IN_DIR / f"{cat}.json"
+            if fp.exists():
+                try:
+                    categories[cat] = json.loads(fp.read_text())
+                    print(f"Loaded {cat}: verdict={categories[cat].get('verdict')} "
+                          f"findings={len(categories[cat].get('findings',[]))}")
+                except Exception as e:
+                    print(f"Load {cat}: {e}")
+                    categories[cat] = {"category": cat, "ran": False, "verdict": "PROCEED",
+                                       "critical":0,"high":0,"medium":0,"low":0,
+                                       "findings":[],"all_raw":[],"summary":"Analysis unavailable."}
+            else:
+                print(f"Missing {cat}.json  sub-task may have failed")
+                categories[cat] = {"category": cat, "ran": False, "verdict": "PROCEED",
+                                   "critical":0,"high":0,"medium":0,"low":0,
+                                   "findings":[],"all_raw":[],"summary":"Not analysed."}
+        
+        # -- Collect scan gaps (skipped/unavailable tools with reasons) ----
+        scan_gaps = []
+        sca_cat = categories.get('sca', {})
+        if sca_cat.get('owasp_skipped') and sca_cat.get('owasp_skip_reason'):
+            scan_gaps.append({
+                'tool': 'owasp-dc',
+                'label': 'OWASP Dependency-Check',
+                'reason': sca_cat['owasp_skip_reason'],
+            })
+        
+        # -- Merge all findings ----------------------------------------
+        all_ai_findings = []
+        all_raw_findings = []
+        for cat_data in categories.values():
+            all_ai_findings.extend(cat_data.get("findings", []))
+            all_raw_findings.extend(cat_data.get("all_raw", []))
+        
+        all_ai_findings.sort(key=lambda f: SEV_ORDER.get(f.get("severity","UNKNOWN"),5))
+        
+        #  Aggregate counts from ALL categories 
+        total_counts = {
+            "critical": sum(c.get("critical",0) for c in categories.values()),
+            "high":     sum(c.get("high",0)     for c in categories.values()),
+            "medium":   sum(c.get("medium",0)   for c in categories.values()),
+            "low":      sum(c.get("low",0)       for c in categories.values()),
+        }
+        tests_cat = categories.get("tests", {})
+        test_summary = tests_cat.get("test_summary", {"passed":0,"failed":0,"coverage":0.0,"failures":[]})
+        total_counts["tests_failed"] = test_summary.get("failed", 0)
+        total_counts["coverage_pct"] = test_summary.get("coverage", 0.0)
+        
+        #  Fetch pipeline failure context from operator 
+        pipeline_failures = []
+        try:
+            req = urllib.request.Request(
+                f"{OPERATOR}/api/v1/pipelines/{RUN_ID}/failure-context",
+                headers={"Authorization": f"Bearer {API_TOKEN}"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=30) as r:
+                fc = json.loads(r.read())
+            pipeline_failures = fc.get("failures", [])
+            if pipeline_failures:
+                print(f"Pipeline failures: {[f['task'] for f in pipeline_failures]}")
+        except Exception as e:
+            print(f"failure-context fetch (non-fatal): {e}")
+        
+        #  Risk grade 
+        def compute_risk_grade(critical, high, medium, tests_failed):
+            if critical > 0:
+                return "F" if (critical >= 3 or tests_failed > 0) else "D"
+            if high > 0:
+                return "C" if high >= 3 else "B"
+            if medium > 3:
+                return "C"
+            if medium > 0:
+                return "B"
+            return "A"
+        
+        def compute_verdict(critical, high, medium, tests_failed, build_failed):
+            if build_failed or critical > 0 or tests_failed > 0:
+                return "DO_NOT_PROCEED"
+            if high > 0 or medium > 3:
+                return "PROCEED_WITH_CAUTION"
+            return "PROCEED"
+        
+        build_failed = len(pipeline_failures) > 0
+        risk_grade   = compute_risk_grade(total_counts["critical"], total_counts["high"],
+                                          total_counts["medium"], total_counts["tests_failed"])
+        verdict      = compute_verdict(total_counts["critical"], total_counts["high"],
+                                       total_counts["medium"], total_counts["tests_failed"], build_failed)
+        
+        #  Call AI for synthesis (cheap  only compact summaries) 
+        cat_summary_lines = []
+        for cat, data in categories.items():
+            if data.get("ran", False):
+                cat_summary_lines.append(
+                    f"  {cat.upper()}: verdict={data.get('verdict','?')} "
+                    f"C={data.get('critical',0)} H={data.get('high',0)} "
+                    f"M={data.get('medium',0)} L={data.get('low',0)}  {data.get('summary','')}"
+                )
+        cat_block = "\n".join(cat_summary_lines) or "  No category results available."
+        
+        failure_block = ""
+        if pipeline_failures:
+            blocks = []
+            for f in pipeline_failures:
+                excerpt = f.get("logTail","")[-2000:]
+                blocks.append(f"Stage '{f['task']}' failed (exit {f['exitCode']}): {excerpt}")
+            failure_block = "\nPIPELINE FAILURES:\n" + "\n\n".join(blocks)
+        
+        tests_root_cause = tests_cat.get("root_cause","unknown")
+        tests_ran = tests_cat.get("tests_ran", True)
+        
+        prompt = (
+            "You are a senior security engineer synthesising findings from 5 parallel security analyses.\n\n"
+            f"Application: $(params.app-name)\n"
+            f"Language: $(params.language)\n"
+            f"Commit: $(params.git-commit-sha)\n\n"
+            f"CATEGORY SUMMARIES:\n{cat_block}\n\n"
+            f"OVERALL COUNTS: Critical={total_counts['critical']} High={total_counts['high']} "
+            f"Medium={total_counts['medium']} Low={total_counts['low']}\n"
+            f"TESTS: passed={test_summary.get('passed',0)} failed={test_summary.get('failed',0)} "
+            f"coverage={test_summary.get('coverage',0)}%  "
+            f"tests_ran={tests_ran}  root_cause={tests_root_cause}\n"
+            f"RISK GRADE: {risk_grade}  VERDICT: {verdict}"
+            f"{failure_block}\n\n"
+            "Respond with JSON only:\n"
+            '{"recommendation":"Begin with one of: I recommend proceeding / I recommend proceeding with caution / I do not recommend proceeding. Then 2-4 sentences citing the most critical category findings by name.",'
+            '"executive_summary":"2-4 sentences for an engineering manager  overall posture, key risks, what must be fixed before release.",'
+            '"pipeline_failure_analysis":{"stage":"","root_cause":"","recommended_fix":""}}'
+            " or set pipeline_failure_analysis to null if no pipeline failures.\n\n"
+            "Rules:\n"
+            "- If tests_ran=false and root_cause=compile_error: the recommendation MUST state tests did not run due to a build failure.\n"
+            "- Cite specific categories (e.g. 'secrets scan found a verified credential') not generic phrases.\n"
+            "- pipeline_failure_analysis: diagnose only if PIPELINE FAILURES are listed. Focus on the root cause, not cascaded failures.\n"
+            "- Respond with valid JSON only, no markdown."
+        )
+        
+        def call_ai(p):
+            if not AI_PROVIDER or not AI_API_KEY:
+                return None
+            for attempt in range(3):
+                try:
+                    if AI_PROVIDER == "anthropic":
+                        req = urllib.request.Request(
+                            "https://api.anthropic.com/v1/messages",
+                            data=json.dumps({"model": AI_MODEL, "max_tokens": 1024,
+                                "messages": [{"role": "user", "content": p}]}).encode(),
+                            headers={"x-api-key": AI_API_KEY, "anthropic-version": "2023-06-01",
+                                     "content-type": "application/json"},
+                            method="POST",
+                        )
+                    elif AI_PROVIDER == "gemini":
+                        _k = urllib.parse.quote(AI_API_KEY, safe="")
+                        _m = urllib.parse.quote(AI_MODEL, safe="")
+                        req = urllib.request.Request(
+                            f"https://generativelanguage.googleapis.com/v1beta/models/{_m}:generateContent?key={_k}",
+                            data=json.dumps({"contents":[{"role":"user","parts":[{"text":p}]}],
+                                "systemInstruction":{"parts":[{"text":"Respond with valid JSON only."}]},
+                                "generationConfig":{"maxOutputTokens":1024}}).encode(),
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                    else:
+                        req = urllib.request.Request(
+                            "https://api.openai.com/v1/chat/completions",
+                            data=json.dumps({"model": AI_MODEL, "max_tokens": 1024,
+                                "messages":[{"role":"system","content":"Respond with valid JSON only."},
+                                            {"role":"user","content":p}]}).encode(),
+                            headers={"Authorization": f"Bearer {AI_API_KEY}",
+                                     "Content-Type": "application/json"},
+                            method="POST",
+                        )
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        data = json.loads(r.read())
+                    if AI_PROVIDER == "anthropic":
+                        return data["content"][0]["text"]
+                    elif AI_PROVIDER == "gemini":
+                        return data["candidates"][0]["content"]["parts"][0]["text"]
+                    else:
+                        return data["choices"][0]["message"]["content"]
+                except Exception as e:
+                    print(f"AI attempt {attempt+1}: {e}")
+                    time.sleep(3 * (attempt + 1))
+            return None
+        
+        recommendation      = ""
+        executive_summary   = ""
+        pfa                 = None
+        
+        raw = call_ai(prompt)
+        if raw:
+            raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
+            raw = re.sub(r"\s*```$", "", raw.strip(), flags=re.MULTILINE)
+            try:
+                parsed = json.loads(raw.strip())
+                recommendation    = parsed.get("recommendation", "")
+                executive_summary = parsed.get("executive_summary", "")
+                pfa_raw           = parsed.get("pipeline_failure_analysis")
+                if pfa_raw and isinstance(pfa_raw, dict):
+                    pfa = {"stage": pfa_raw.get("stage",""),
+                           "rootCause": pfa_raw.get("root_cause",""),
+                           "recommendedFix": pfa_raw.get("recommended_fix","")}
+            except Exception as e:
+                print(f"AI JSON parse: {e}")
+        
+        # Rule-based fallback for recommendation
+        if not recommendation:
+            verdict_phrases = {
+                "DO_NOT_PROCEED": "I do not recommend proceeding",
+                "PROCEED_WITH_CAUTION": "I recommend proceeding with caution",
+                "PROCEED": "I recommend proceeding",
+            }
+            root_note = (f" Tests did not run  compile stage failed." if tests_root_cause == "compile_error" else "")
+            recommendation = (
+                f"{verdict_phrases.get(verdict, 'I recommend proceeding with caution')}. "
+                f"Risk grade {risk_grade}: {total_counts['critical']} critical, {total_counts['high']} high findings. "
+                f"{total_counts['tests_failed']} test failures.{root_note} "
+                f"This is automated  the human reviewer decides at the approval gate."
+            )
+        
+        if not executive_summary:
+            cat_line = " | ".join(
+                f"{cat.upper()}: {data['verdict']}" for cat, data in categories.items() if data.get("ran")
+            )
+            executive_summary = (
+                f"Risk grade {risk_grade}. "
+                f"{total_counts['critical']} critical, {total_counts['high']} high findings. "
+                f"{cat_line}. "
+                f"Tests: {test_summary.get('passed',0)} passed, {test_summary.get('failed',0)} failed "
+                f"({test_summary.get('coverage',0)}% coverage)."
+            )
+        
+        if pipeline_failures and not pfa:
+            first = pipeline_failures[0]
+            pfa = {
+                "stage": first["task"],
+                "rootCause": f"Stage '{first['task']}' failed (step '{first['step']}', exit {first['exitCode']}).",
+                "recommendedFix": "Review the stage logs, fix the underlying error, then re-run.",
+            }
+        
+        #  Build category breakdown 
+        TOOL_CATEGORY = {
+            "gitleaks":"secrets","trufflehog":"secrets",
+            "semgrep":"sast","bearer":"sast","bandit":"sast","gosec":"sast",
+            "spotbugs":"sast","eslint":"sast","roslyn":"sast","checkov":"sast",
+            "osv-scanner":"sca","owasp-dc":"sca",
+            "trivy":"image-scan","grype":"image-scan",
+            "hadolint":"dockerfile-lint",
+        }
+        CATEGORY_LABELS = {
+            "secrets":"Secrets","sast":"SAST (Static Analysis)",
+            "sca":"SCA (Dependencies)","image-scan":"Image Scan","dockerfile-lint":"Dockerfile Lint",
+        }
+        category_breakdown = {
+            cat: {"label": lbl, "critical":0,"high":0,"medium":0,"low":0,"total":0}
+            for cat, lbl in CATEGORY_LABELS.items()
+        }
+        for f in all_raw_findings:
+            cat = TOOL_CATEGORY.get(f.get("tool",""), "other")
+            bkt = category_breakdown.setdefault(cat, {"label":cat,"critical":0,"high":0,"medium":0,"low":0,"total":0})
+            sev = f.get("severity","UNKNOWN").lower()
+            if sev not in ("critical","high","medium","low"):
+                sev = "low"
+            bkt[sev]   += 1
+            bkt["total"] += 1
+        
+        #  Build tool breakdown 
+        tool_breakdown = {}
+        for f in all_raw_findings:
+            tool = f.get("tool","unknown")
+            if tool not in tool_breakdown:
+                tool_breakdown[tool] = {"label":tool,"ran":True,"critical":0,"high":0,"medium":0,"low":0,"total":0}
+            sev = f.get("severity","UNKNOWN").lower()
+            if sev not in ("critical","high","medium","low"):
+                sev = "low"
+            tool_breakdown[tool][sev]   += 1
+            tool_breakdown[tool]["total"] += 1
+        
+        #  Supply chain (from image category) 
+        img_cat = categories.get("image", {})
+        supply_chain = {
+            "sbomGenerated": img_cat.get("sbom_generated", False),
+            "sbomComponents": img_cat.get("sbom_components", 0),
+            "imageSigned": False,
+        }
+        
+        #  Category analysis for chat enrichment 
+        category_analysis = {
+            cat: {
+                "verdict":  data.get("verdict","PROCEED"),
+                "summary":  data.get("summary",""),
+                "critical": data.get("critical",0),
+                "high":     data.get("high",0),
+                "medium":   data.get("medium",0),
+                "low":      data.get("low",0),
+                "ran":      data.get("ran",False),
+            }
+            for cat, data in categories.items()
+        }
+        # Include root_cause and compile log for the tests category so the chat agent knows
+        if "tests" in categories:
+            category_analysis["tests"]["root_cause"]          = tests_cat.get("root_cause","unknown")
+            category_analysis["tests"]["tests_ran"]           = tests_cat.get("tests_ran",True)
+            category_analysis["tests"]["compile_log_excerpt"] = tests_cat.get("compile_log_excerpt")
+        
+        #  Minimal allFindings (for CSV + posture) 
+        all_findings_minimal = [
+            {"tool": f.get("tool",""), "severity": f.get("severity","UNKNOWN"),
+             "cve": f.get("cve",""), "title": (f.get("title","") or "")[:120],
+             "location": (f.get("location","") or "")[:200], "fix_version": f.get("fix_version","")}
+            for f in sorted(all_raw_findings, key=lambda x: SEV_ORDER.get(x.get("severity","UNKNOWN"),5))
+        ]
+        
+        full_report = {
+            "runId":      RUN_ID,
+            "appName":    "$(params.app-name)",
+            "language":   "$(params.language)",
+            "commitSha":  "$(params.git-commit-sha)",
+            "aiProvider": AI_PROVIDER,
+            "recommendation":         recommendation,
+            "executiveSummary":       executive_summary,
+            "findings":               all_ai_findings[:30],
+            "allFindings":            all_findings_minimal,
+            "testAnalysis":           tests_cat.get("test_analysis", []),
+            "summaryCounts":          total_counts,
+            "rawFindingCount":        len(all_raw_findings),
+            "testSummary":            test_summary,
+            "riskGrade":              risk_grade,
+            "verdict":                verdict,
+            "categoryBreakdown":      category_breakdown,
+            "toolBreakdown":          tool_breakdown,
+            "supplyChain":            supply_chain,
+            "pipelineFailureAnalysis": pfa,
+            "categoryAnalysis":       category_analysis,
+            'scanGaps':               scan_gaps,
+        }
+        
+        #  Post to operator  retry with backoff 
+        # AI report is the gate for DEVELOPER_REVIEW: without it, the developer
+        # sees no findings and cannot make an informed send-for-review decision.
+        data = json.dumps(full_report).encode()
+        posted = False
+        for attempt in range(1, 7):
+            try:
+                req = urllib.request.Request(
+                    f"{OPERATOR}/api/v1/pipelines/{RUN_ID}/ai-report",
+                    data=data,
+                    headers={"Authorization": f"Bearer {API_TOKEN}", "Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    r.read()
+                print(f"AI report posted to operator successfully (attempt {attempt})")
+                open("$(results.REPORT_POSTED.path)", "w").write("true")
+                posted = True
+                break
+            except Exception as e:
+                wait = attempt * 10
+                print(f"AI report post attempt {attempt} failed: {e}  retrying in {wait}s")
+                if attempt < 6:
+                    time.sleep(wait)
+        if not posted:
+            print("WARNING: AI report could not be posted after 6 attempts")
+            open("$(results.REPORT_POSTED.path)", "w").write("false")
+        
+        rec = recommendation[:500]
+        open("$(results.RECOMMENDATION.path)", "w").write(rec)
+        print(f"Aggregate complete: riskGrade={risk_grade} verdict={verdict}")
+        print(f"Recommendation: {rec}")
 
 # Source: platform/tekton/tasks/ai/ai-analyze-image.yaml
 ---
@@ -4598,7 +5049,243 @@ spec:
               name: gitops-operator-token
               key: operatorApiToken
       script: |
+        #!/usr/bin/env python3
+        import json, os, re, pathlib, time, urllib.request, urllib.error, urllib.parse
         
+        def _sanitize(s):
+            return "".join(c for c in (s or "").strip() if c.isprintable() and c not in "\r\n\t\x00")
+        
+        AI_PROVIDER = AI_API_KEY = AI_MODEL = ""
+        try:
+            _creds = pathlib.Path("$(workspaces.ai-credentials.path)")
+            AI_PROVIDER = _sanitize((_creds / "aiProvider").read_text())
+            AI_API_KEY  = _sanitize((_creds / "aiApiKey").read_text())
+            _mf = _creds / "aiModel"
+            AI_MODEL = _sanitize(_mf.read_text()) if _mf.exists() else ""
+            if not AI_MODEL:
+                AI_MODEL = {
+                    "anthropic": "claude-haiku-4-5-20251001",
+                    "openai":    "gpt-4o-mini",
+                    "gemini":    "gemini-2.0-flash",
+                }.get(AI_PROVIDER, "")
+        except Exception as e:
+            print(f"Credentials: {e}")
+        
+        SCAN_DIR = pathlib.Path("$(workspaces.scan-results.path)")
+        OUT_DIR  = pathlib.Path("$(workspaces.ai-results.path)")
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        CVE_RE = re.compile(r"^CVE-\d{4}-\d+$", re.IGNORECASE)
+        
+        findings = []
+        ran = False
+        
+        #  OSV-Scanner SARIF 
+        osv_sarif = SCAN_DIR / "sca" / "osv.sarif"
+        if osv_sarif.exists():
+            ran = True
+            try:
+                d = json.loads(osv_sarif.read_text())
+                for run in d.get("runs", []):
+                    rules = {r["id"]: r for r in run.get("tool", {}).get("driver", {}).get("rules", [])}
+                    for result in run.get("results", []):
+                        rid  = result.get("ruleId", "?")
+                        rule = rules.get(rid, {})
+                        locs = result.get("locations", [])
+                        loc  = ""
+                        if locs:
+                            pl  = locs[0].get("physicalLocation", {})
+                            uri = pl.get("artifactLocation", {}).get("uri", "?")
+                            ln  = pl.get("region", {}).get("startLine", "")
+                            loc = f"{uri}:{ln}" if ln else uri
+                        sev = {"error":"HIGH","warning":"MEDIUM","note":"LOW","none":"INFO"}.get(
+                            result.get("level","warning").lower(), "MEDIUM").upper()
+                        cve = rid if CVE_RE.match(rid) else ""
+                        findings.append({"tool": "osv-scanner", "severity": sev,
+                            "title": rule.get("shortDescription", {}).get("text", rid)[:120],
+                            "location": loc, "cve": cve, "fix_version": ""})
+            except Exception as e:
+                print(f"OSV SARIF parse: {e}")
+        
+        #  OWASP Dependency-Check JSON 
+        owasp_json   = SCAN_DIR / 'sca' / 'dependency-check-report.json'
+        owasp_status = SCAN_DIR / 'sca' / 'owasp-status.json'
+        owasp_skip_reason = ''
+        
+        # Read status file - tells us whether OWASP ran, skipped, or errored.
+        if owasp_status.exists():
+            try:
+                st = json.loads(owasp_status.read_text())
+                status_val = st.get('status', '')
+                if status_val == 'skipped':
+                    reason = st.get('reason', 'unknown')
+                    if reason == 'db_not_found':
+                        owasp_skip_reason = 'OWASP Dependency-Check skipped: NVD database not yet seeded. Run the nvd-updater job to initialize.'
+                    elif reason == 'db_update_in_progress':
+                        owasp_skip_reason = 'OWASP Dependency-Check skipped: NVD database update was in progress. Re-trigger after the update completes.'
+                    else:
+                        owasp_skip_reason = 'OWASP Dependency-Check skipped: ' + reason
+                    ran = True
+                    print('OWASP skipped: ' + owasp_skip_reason)
+                elif status_val == 'no_report':
+                    owasp_skip_reason = 'OWASP Dependency-Check completed but produced no report (scan timeout or error).'
+                    ran = True
+            except Exception as e:
+                print('OWASP status parse: ' + str(e))
+        
+        if owasp_json.exists():
+            ran = True
+            try:
+                d = json.loads(owasp_json.read_text())
+                for dep in d.get('dependencies', []):
+                    for vuln in dep.get('vulnerabilities', []):
+                        sev = vuln.get('severity', 'MEDIUM').upper()
+                        if sev not in ('CRITICAL','HIGH','MEDIUM','LOW'):
+                            sev = 'MEDIUM'
+                        cve = vuln.get('name', '')
+                        findings.append({'tool': 'owasp-dc', 'severity': sev,
+                            'title': (vuln.get('description','')[:80] or cve),
+                            'location': dep.get('filePath','?') or dep.get('fileName','?'),
+                            'cve': cve if CVE_RE.match(cve) else '',
+                            'fix_version': ''})
+            except Exception as e:
+                print('OWASP DC parse: ' + str(e))
+        
+        SEV_ORDER = {'CRITICAL':0,'HIGH':1,'MEDIUM':2,'LOW':3,'INFO':4,'UNKNOWN':5}
+        findings.sort(key=lambda f: SEV_ORDER.get(f.get('severity','UNKNOWN'), 5))
+        counts = {s.lower(): sum(1 for f in findings if f.get('severity') == s)
+                  for s in ('CRITICAL','HIGH','MEDIUM','LOW')}
+        print('SCA findings: ' + str(len(findings)) + ' total  ' + str(counts))
+        
+        #  Call AI 
+        ai_findings = []
+        summary = ""
+        
+        def call_ai(prompt):
+            if not AI_PROVIDER or not AI_API_KEY:
+                return None
+            for attempt in range(3):
+                try:
+                    if AI_PROVIDER == "anthropic":
+                        req = urllib.request.Request(
+                            "https://api.anthropic.com/v1/messages",
+                            data=json.dumps({"model": AI_MODEL, "max_tokens": 1024,
+                                "messages": [{"role": "user", "content": prompt}]}).encode(),
+                            headers={"x-api-key": AI_API_KEY, "anthropic-version": "2023-06-01",
+                                     "content-type": "application/json"},
+                            method="POST",
+                        )
+                    elif AI_PROVIDER == "gemini":
+                        _k = urllib.parse.quote(AI_API_KEY, safe="")
+                        _m = urllib.parse.quote(AI_MODEL, safe="")
+                        req = urllib.request.Request(
+                            f"https://generativelanguage.googleapis.com/v1beta/models/{_m}:generateContent?key={_k}",
+                            data=json.dumps({"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                                "systemInstruction": {"parts": [{"text": "Respond with valid JSON only."}]},
+                                "generationConfig": {"maxOutputTokens": 1024}}).encode(),
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                    else:
+                        req = urllib.request.Request(
+                            "https://api.openai.com/v1/chat/completions",
+                            data=json.dumps({"model": AI_MODEL, "max_tokens": 1024,
+                                "messages": [{"role": "system", "content": "Respond with valid JSON only."},
+                                             {"role": "user",   "content": prompt}]}).encode(),
+                            headers={"Authorization": f"Bearer {AI_API_KEY}",
+                                     "Content-Type": "application/json"},
+                            method="POST",
+                        )
+                    with urllib.request.urlopen(req, timeout=60) as r:
+                        data = json.loads(r.read())
+                    if AI_PROVIDER == "anthropic":
+                        return data["content"][0]["text"]
+                    elif AI_PROVIDER == "gemini":
+                        return data["candidates"][0]["content"]["parts"][0]["text"]
+                    else:
+                        return data["choices"][0]["message"]["content"]
+                except Exception as e:
+                    print(f"AI attempt {attempt+1}: {e}")
+                    time.sleep(3 * (attempt + 1))
+            return None
+        
+        if findings:
+            gap_note = ('COVERAGE GAP: ' + owasp_skip_reason + ' OSV-Scanner results above but OWASP NVD coverage missing.\n\n') if owasp_skip_reason else ''
+            prompt = (
+                'You are a software composition analysis expert reviewing dependency vulnerabilities.\n\n'
+                'FINDINGS (' + str(len(findings)) + ' CVEs/vulnerabilities, sorted by severity):\n'
+                + json.dumps(findings[:30], indent=2) + '\n\n'
+                + gap_note
+                + 'Respond with JSON only:\n'
+                '{verdict:BLOCK|PROCEED_WITH_CAUTION|PROCEED,'
+                'summary:1-3 sentences on dependency vulnerability posture,'
+                'findings:['
+                '{tool:,severity:,title:,location:,'
+                'cve:exact CVE ID from data or empty,fix_version:min safe version or empty,'
+                'impact:,fix_description:Upgrade X from Y to Z,fix_code:}'
+                ']}\n\n'
+                'Rules: BLOCK if CRITICAL CVE with a known fix version exists. '
+                'cve and fix_version must be copied exactly from the source data - never invented. '
+                'fix_description: Upgrade package to fix_version. '
+                'Respond with valid JSON only, no markdown.'
+            )
+            raw = call_ai(prompt)
+            if raw:
+                raw = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.MULTILINE)
+                raw = re.sub(r'\s*```$', '', raw.strip(), flags=re.MULTILINE)
+                try:
+                    parsed = json.loads(raw.strip())
+                    ai_findings = parsed.get('findings', [])
+                    summary = parsed.get('summary', '')
+                except Exception as e:
+                    print('AI JSON parse: ' + str(e))
+        
+        if not summary:
+            if findings:
+                summary = str(counts['critical']) + ' critical, ' + str(counts['high']) + ' high dependency CVEs.'
+            elif owasp_skip_reason:
+                summary = 'OSV-Scanner found no vulnerabilities. ' + owasp_skip_reason
+            else:
+                summary = 'No SCA dependency vulnerabilities detected.'
+        
+        if owasp_skip_reason and owasp_skip_reason not in summary:
+            summary = summary.rstrip('.') + '. ' + owasp_skip_reason
+        
+        if counts['critical'] > 0:
+            verdict = 'BLOCK'
+        elif counts['high'] > 0:
+            verdict = 'PROCEED_WITH_CAUTION'
+        elif findings:
+            verdict = 'PROCEED_WITH_CAUTION'
+        elif owasp_skip_reason:
+            verdict = 'PROCEED_WITH_CAUTION'
+        else:
+            verdict = 'PROCEED'
+        
+        result = {
+            'category': 'sca',
+            'ran': ran,
+            'verdict': verdict,
+            'owasp_skipped': bool(owasp_skip_reason),
+            'owasp_skip_reason': owasp_skip_reason,
+            **counts,
+            'findings': ai_findings or [
+                {'tool': f['tool'], 'severity': f['severity'], 'title': f['title'],
+                 'location': f.get('location',''), 'cve': f.get('cve',''),
+                 'fix_version': f.get('fix_version',''),
+                 'impact': 'Vulnerable dependency in shipped image.',
+                 'fix_description': 'Upgrade to the patched version.',
+                 'fix_code': ''}
+                for f in findings[:10]
+            ],
+            'all_raw': [{'tool': f['tool'], 'severity': f['severity'], 'title': f['title'][:120],
+                         'location': f.get('location','')[:200],
+                         'cve': f.get('cve',''), 'fix_version': f.get('fix_version','')}
+                        for f in findings],
+            'summary': summary,
+        }
+        
+        (OUT_DIR / 'sca.json').write_text(json.dumps(result, indent=2))
+        print('SCA analysis written: verdict=' + result['verdict'] + ', findings=' + str(len(result['findings'])))
 
 # Source: platform/tekton/tasks/ai/ai-analyze-secrets.yaml
 ---
