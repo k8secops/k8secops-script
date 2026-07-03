@@ -66,6 +66,20 @@ spec:
         #!/bin/sh
         set -e
 
+        # Every later pipeline task (ai-preflight, scanners, compile, etc.)
+        # mounts this same workspace as a DIFFERENT UID -- clone is hardcoded
+        # to 65532, compile is mostly 1000. Without this, a later step
+        # creating a NEW directory under one clone created (e.g. python's
+        # `./vendor` when build-context is a subdirectory, not ".") fails
+        # with EACCES, since clone's default umask leaves new directories at
+        # 0755 (writable only by their creating UID). A permissive umask here
+        # makes everything clone creates writable by any later UID. fsGroup
+        # on the PipelineRun's podTemplate (run_trigger.py) is the "real" fix
+        # for clusters with a CSI driver that supports it (EBS/PD/Azure
+        # Disk) -- it's a no-op on Kind's hostPath-backed local-path
+        # provisioner, which is why this umask is also needed for local dev.
+        umask 0000
+
         if [ "$(params.deleteExisting)" = "true" ]; then
           find $(workspaces.output.path) -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
         fi
@@ -1448,11 +1462,68 @@ spec:
   workspaces:
     - name: source
     - name: results
+    - name: extra-test-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} for this app's declared test-env-var credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared external-service credentials (DB/Redis/Kafka/curl-scp-wget targets etc.), shared with the compile task. Absent for apps with none."
   results:
     - name: TESTS_PASSED
     - name: TESTS_FAILED
     - name: COVERAGE_PCT
   steps:
+    # Generic, identical step for every language -- exports each declared
+    # test-time secret (its filename IS the literal env var name the
+    # customer's test code already reads) to a file the test step below
+    # sources. No-op when extra-test-creds isn't bound (every app that
+    # hasn't configured a test-env-var credential).
+    - name: export-extra-env
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time (below) instead of embedding the
+        # value as literal text into the generated export line -- the value
+        # never passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-line content or a
+        # literal quote/$( ) in the value can never break or inject into
+        # the generated line.
+        ENVFILE="$(workspaces.results.path)/.extra-env"
+        : > "$ENVFILE"
+        if [ "$(workspaces.extra-test-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-test-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+        if [ "$(workspaces.extra-service-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-service-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+
     - name: run-tests
       image: k8secops/k8secops:maven-3.9-eclipse-temurin-$(params.build-version)
       workingDir: $(workspaces.source.path)
@@ -1470,6 +1541,7 @@ spec:
         limits:   {cpu: "2000m", memory: "3Gi"}
       script: |
         #!/bin/sh
+        [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
         mkdir -p $(workspaces.results.path)/tests
         BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
@@ -1615,11 +1687,63 @@ spec:
   workspaces:
     - name: source
     - name: results
+    - name: extra-test-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} for this app's declared test-env-var credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared external-service credentials (DB/Redis/Kafka/curl-scp-wget targets etc.), shared with the compile task. Absent for apps with none."
   results:
     - name: TESTS_PASSED
     - name: TESTS_FAILED
     - name: COVERAGE_PCT
   steps:
+    - name: export-extra-env
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time (below) instead of embedding the
+        # value as literal text into the generated export line -- the value
+        # never passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-line content or a
+        # literal quote/$( ) in the value can never break or inject into
+        # the generated line.
+        ENVFILE="$(workspaces.results.path)/.extra-env"
+        : > "$ENVFILE"
+        if [ "$(workspaces.extra-test-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-test-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+        if [ "$(workspaces.extra-service-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-service-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+
     - name: test
       image: k8secops/k8secops:python-$(params.build-version)-slim
       workingDir: $(workspaces.source.path)
@@ -1639,6 +1763,7 @@ spec:
           value: "$(workspaces.results.path)/.pytest-home"
       script: |
         #!/bin/bash
+        [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
         mkdir -p "$HOME"
         pip install --quiet --user pytest pytest-cov pytest-xml --break-system-packages
 
@@ -1756,11 +1881,63 @@ spec:
   workspaces:
     - name: source
     - name: results
+    - name: extra-test-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} for this app's declared test-env-var credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared external-service credentials (DB/Redis/Kafka/curl-scp-wget targets etc.), shared with the compile task. Absent for apps with none."
   results:
     - name: TESTS_PASSED
     - name: TESTS_FAILED
     - name: COVERAGE_PCT
   steps:
+    - name: export-extra-env
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time (below) instead of embedding the
+        # value as literal text into the generated export line -- the value
+        # never passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-line content or a
+        # literal quote/$( ) in the value can never break or inject into
+        # the generated line.
+        ENVFILE="$(workspaces.results.path)/.extra-env"
+        : > "$ENVFILE"
+        if [ "$(workspaces.extra-test-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-test-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+        if [ "$(workspaces.extra-service-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-service-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+
     - name: test
       image: k8secops/k8secops:node-$(params.build-version)-alpine
       workingDir: $(workspaces.source.path)
@@ -1780,6 +1957,7 @@ spec:
           value: "$(workspaces.results.path)/.npm-home"
       script: |
         #!/bin/sh
+        [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
         mkdir -p "$HOME"
         BUILD_TOOL="$(params.build-tool)"
         ${BUILD_TOOL} ci --silent 2>/dev/null || ${BUILD_TOOL} install --silent
@@ -1894,11 +2072,63 @@ spec:
   workspaces:
     - name: source
     - name: results
+    - name: extra-test-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} for this app's declared test-env-var credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared external-service credentials (DB/Redis/Kafka/curl-scp-wget targets etc.), shared with the compile task. Absent for apps with none."
   results:
     - name: TESTS_PASSED
     - name: TESTS_FAILED
     - name: COVERAGE_PCT
   steps:
+    - name: export-extra-env
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time (below) instead of embedding the
+        # value as literal text into the generated export line -- the value
+        # never passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-line content or a
+        # literal quote/$( ) in the value can never break or inject into
+        # the generated line.
+        ENVFILE="$(workspaces.results.path)/.extra-env"
+        : > "$ENVFILE"
+        if [ "$(workspaces.extra-test-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-test-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+        if [ "$(workspaces.extra-service-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-service-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+
     - name: run-tests
       # Must use the SAME SDK version as the project's TargetFramework so the
       # matching runtime is present when testhost executes the test binaries.
@@ -1936,6 +2166,7 @@ spec:
         limits:   {cpu: "2000m", memory: "3Gi"}
       script: |
         #!/bin/sh
+        [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
         mkdir -p "$HOME"
         mkdir -p $(workspaces.results.path)/tests
         # Use test-file (test project .csproj) if specified; fall back to build-file
@@ -2065,11 +2296,63 @@ spec:
   workspaces:
     - name: source
     - name: results
+    - name: extra-test-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} for this app's declared test-env-var credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared external-service credentials (DB/Redis/Kafka/curl-scp-wget targets etc.), shared with the compile task. Absent for apps with none."
   results:
     - name: TESTS_PASSED
     - name: TESTS_FAILED
     - name: COVERAGE_PCT
   steps:
+    - name: export-extra-env
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time (below) instead of embedding the
+        # value as literal text into the generated export line -- the value
+        # never passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-line content or a
+        # literal quote/$( ) in the value can never break or inject into
+        # the generated line.
+        ENVFILE="$(workspaces.results.path)/.extra-env"
+        : > "$ENVFILE"
+        if [ "$(workspaces.extra-test-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-test-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+        if [ "$(workspaces.extra-service-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-service-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+
     - name: test
       image: k8secops/k8secops:golang-$(params.build-version)-alpine
       workingDir: $(workspaces.source.path)
@@ -2091,6 +2374,7 @@ spec:
           value: "$(workspaces.results.path)/.go-home"
       script: |
         #!/bin/sh
+        [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
         mkdir -p "$HOME"
         mkdir -p $(workspaces.results.path)/tests
 
@@ -2259,6 +2543,8 @@ spec:
       default: "java"
     - name: dockerfile-path
       default: "./Dockerfile"
+    - name: build-context
+      default: "."
   workspaces:
     - name: source
   steps:
@@ -2276,10 +2562,39 @@ spec:
           type: RuntimeDefault
       script: |
         #!/usr/bin/env python3
+        # Hard-requires a pre-built, copyable artifact for every language --
+        # the compile Task already produces it (see compile-*-task.yaml), and
+        # the Dockerfile must COPY it, never re-run the build tool inside
+        # Kaniko. This is a deliberate, fleet-wide breaking change: apps with
+        # a Dockerfile that re-installs/rebuilds inside Kaniko will fail here
+        # until restructured to COPY the artifact instead. Required so that
+        # build-time credentials (private Maven/npm/NuGet/Go-module/PyPI
+        # repos, see the extra-credentials feature) reach the install step --
+        # they're only available here, in the compile Task, never inside
+        # Kaniko's separately-privileged build.
         import pathlib, sys
 
-        build_tool = "$(params.build-tool)"
-        source_dir = pathlib.Path("$(workspaces.source.path)")
+        build_tool    = "$(params.build-tool)"
+        language      = "$(params.language)"
+        source_dir    = pathlib.Path("$(workspaces.source.path)")
+        build_context = "$(params.build-context)"
+        # Artifacts (vendor/, node_modules/, bin/, publish-output/) are created
+        # by the compile Task's workingDir, which is source/<build-context> --
+        # look for them there, not at the workspace root, or subdirectory
+        # buildContexts (e.g. a monorepo app in "operator/") always fail here
+        # even though compile succeeded.
+        context_dir = source_dir if build_context in (".", "./", "") \
+                      else source_dir / build_context.strip("./")
+
+        def require(path: pathlib.Path, what: str, fix: str):
+            missing = not path.exists() or (path.is_dir() and not any(path.iterdir()))
+            if missing:
+                print(f"ERROR: {what} not found at {path.relative_to(source_dir)} -- "
+                      f"compile stage may have failed, or the Dockerfile re-runs the "
+                      f"build tool instead of copying the compile stage's output.")
+                print(f"  FIX: {fix}")
+                sys.exit(1)
+            print(f"-- {what} ready for Kaniko: {path.relative_to(source_dir)} --")
 
         if build_tool in ("maven", "gradle"):
             jars = [p for p in source_dir.rglob("*.jar")
@@ -2291,13 +2606,25 @@ spec:
             print("-- Build artifacts ready for Kaniko: --")
             for j in sorted(jars):
                 print(f"  {j.stat().st_size // 1024} KB  {j.relative_to(source_dir)}")
-        elif build_tool in ("npm",):
-            dist = source_dir / "dist"
-            build = source_dir / "build"
-            if not dist.exists() and not build.exists():
-                print("WARN: No dist/ or build/ directory found for npm project")
-            else:
-                print("-- npm build output ready --")
+        elif build_tool in ("npm", "yarn", "pnpm"):
+            require(context_dir / "node_modules", "node_modules/",
+                     "Dockerfile should COPY node_modules instead of running npm/yarn/pnpm install.")
+            if language in ("react", "nextjs"):
+                found = [d for d in ("dist", "build", ".next") if (context_dir / d).exists()]
+                if not found:
+                    print("ERROR: No dist/, build/, or .next/ directory found -- "
+                          "the compile stage's 'npm run build' may have failed.")
+                    sys.exit(1)
+                print(f"-- Build output ready: {', '.join(found)} --")
+        elif build_tool == "go":
+            require(context_dir / "bin", "Compiled Go binary (bin/)",
+                    "Dockerfile should COPY the bin/ directory instead of running 'go build'.")
+        elif build_tool == "dotnet":
+            require(context_dir / "publish-output", "dotnet publish output (publish-output/)",
+                    "Dockerfile should COPY publish-output/ instead of running 'dotnet publish'.")
+        elif build_tool == "pip":
+            require(context_dir / "vendor", "Python virtualenv (vendor/)",
+                    "Dockerfile should COPY vendor/ instead of running pip/poetry/pdm/pipenv/uv install.")
         else:
             print(f"-- build-tool={build_tool}: artifacts managed by Dockerfile --")
 
@@ -2321,18 +2648,32 @@ spec:
         df_rel     = "$(params.dockerfile-path)".lstrip("./")
         df_path    = source_dir / df_rel if df_rel else source_dir / "Dockerfile"
 
+        # Single-stage, COPY-only by design (no RUN install/build) -- the
+        # compile Task already produced the final artifact (vendor/, bin/,
+        # publish-output/, node_modules+dist) in the source workspace; these
+        # generated Dockerfiles just package it. This is what lets build-time
+        # credentials (private Maven/npm/NuGet/Go-module/PyPI repos) actually
+        # reach the install step, and matches what verify-artifacts now
+        # hard-requires for every language.
         DEFAULT_DOCKERFILES = {
             "python": "FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\n"
-                      "RUN pip install --no-cache-dir -r requirements.txt 2>/dev/null || true\n"
+                      "ENV PATH=\"/app/vendor/bin:$PATH\"\n"
                       "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
             "nodejs": "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\n"
-                      "RUN npm install --omit=dev 2>/dev/null || npm install 2>/dev/null || true\n"
                       "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
-            "go":     "FROM golang:1.22-alpine\nWORKDIR /app\nCOPY . .\n"
-                      "RUN go build ./... 2>/dev/null || true\n"
+            # `serve` is a tooling install (static file server), not an
+            # application dependency -- always from the public npm registry,
+            # never needs the app's private-repo credentials, so installing
+            # it here doesn't reintroduce the problem this change fixes.
+            "react":  "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\n"
+                      "RUN npm install -g serve 2>/dev/null || true\n"
+                      "CMD [\"serve\", \"-s\", \"build\", \"-l\", \"3000\"]\n",
+            "nextjs": "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\n"
+                      "CMD [\"npm\", \"start\"]\n",
+            "go":     "FROM alpine:3.20\nWORKDIR /app\nCOPY bin/ ./bin/\n"
                       "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
-            "dotnet": "FROM mcr.microsoft.com/dotnet/sdk:10.0\nWORKDIR /app\nCOPY . .\n"
-                      "RUN dotnet publish -c Release -o /out 2>/dev/null || true\n"
+            "dotnet": "FROM mcr.microsoft.com/dotnet/aspnet:9.0\nWORKDIR /app\n"
+                      "COPY publish-output/. .\n"
                       "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
         }
 
@@ -2348,17 +2689,17 @@ spec:
         lines = df_path.read_text().splitlines()
         from_count = sum(1 for l in lines if re.match(r'^\s*FROM\s+', l, re.I))
         if from_count > 1:
-            print(f"  Multi-stage build ({from_count} FROM stages) -- no pre-existing artifacts required.")
-            ignore_path = source_dir / ".dockerignore"
-            additions = ["obj/", "bin/", "target/", "build/libs/", "dist/", ".next/",
-                         "__pycache__/", "*.pyc", ".git/"]
-            existing = ignore_path.read_text() if ignore_path.exists() else ""
-            new_lines = [e for e in additions if e not in existing]
-            if new_lines:
-                with ignore_path.open("a") as f:
-                    f.write("\n# gitops-platform: exclude pipeline build artifacts\n")
-                    f.write("\n".join(new_lines) + "\n")
-                print(f"  Added {len(new_lines)} entries to .dockerignore")
+            # Multi-stage Dockerfiles still pass through verify-artifacts (the
+            # PREVIOUS step) like every other language now -- that step
+            # already hard-failed if the compile-stage artifact is missing,
+            # regardless of single- vs multi-stage. This branch only skips
+            # the host-filesystem COPY-source check below, which doesn't
+            # apply to `COPY --from=<stage>` instructions. Build artifacts
+            # are deliberately NOT excluded from the Docker context here
+            # (unlike the old re-install-inside-Kaniko pattern) -- a
+            # multi-stage Dockerfile may legitimately need to COPY them in.
+            print(f"  Multi-stage build ({from_count} FROM stages) -- "
+                  f"skipping host COPY-source check (handled by verify-artifacts already).")
             sys.exit(0)
 
         print("  Single-stage build -- checking COPY sources:")
@@ -3341,9 +3682,106 @@ spec:
       default: ""
     - name: build-context
       default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
   workspaces:
     - name: source
+    - name: extra-build-creds
+      optional: true
+      description: "Consolidated Secret of {name}-username/{name}-token keys for this app's declared build-artifact-repo credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
   steps:
+    # Generic, identical script for every .NET app -- writes a
+    # packageSourceCredentials block (NuGet's own documented convention) into
+    # $HOME/.nuget/NuGet/NuGet.Config, keyed by the SAME source name the
+    # customer's own committed NuGet.config/.csproj already declares under
+    # matchId -- this step never invents a new package source, only supplies
+    # credentials for one the customer's repo already references. No-op when
+    # extra-creds-manifest is "[]" (every app that hasn't configured one).
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.dotnet-home"
+      script: |
+        #!/usr/bin/env python3
+        import json, os, pathlib
+
+        manifest = json.loads('''$(params.extra-creds-manifest)''')
+        creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        if not manifest:
+            print("No extra build-artifact-repo credentials declared -- skipping")
+        else:
+            nuget_dir = home / ".nuget" / "NuGet"
+            nuget_dir.mkdir(parents=True, exist_ok=True)
+            blocks = []
+            for cred in manifest:
+                name = cred["name"]
+                user = (creds_dir / f"{name}-username").read_text().strip()
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                blocks.append(
+                    f"    <{cred['matchId']}>\n"
+                    f"      <add key=\"Username\" value=\"{user}\" />\n"
+                    f"      <add key=\"ClearTextPassword\" value=\"{token}\" />\n"
+                    f"    </{cred['matchId']}>")
+            (nuget_dir / "NuGet.Config").write_text(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<configuration>\n"
+                "  <packageSourceCredentials>\n" + "\n".join(blocks) +
+                "\n  </packageSourceCredentials>\n</configuration>\n")
+            print(f"Wrote {len(manifest)} NuGet source credential(s) to {nuget_dir}/NuGet.Config")
+
+        # Generic, identical for every language: export this app's declared
+        # external-service credentials (DB/Redis/Kafka/curl-scp-wget targets
+        # etc.) as a sourceable env file the compile step reads before
+        # invoking the build tool. No-op when the workspace isn't bound or no
+        # external-service credentials declared.
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time instead of embedding the value as
+        # literal text into the generated export line -- the value never
+        # passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-character content
+        # (quotes, $(...), newlines) can never break or inject into the line.
+        svc_lines: list[str] = []
+        # NOTE: each $(workspaces.<name>.path) must appear literally here --
+        # Tekton substitutes these as plain text before the script runs, so
+        # it cannot resolve one built from a Python loop variable.
+        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
+                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+
     # "" Version detection """""""""""""""""""""""""""""""""""""""""""""""""""""
     # Read TargetFramework(s) from the csproj and write the required SDK major
     # version to a shared file. This runs in a minimal python image that is
@@ -3460,26 +3898,41 @@ spec:
         BUILD_FILE="$(params.build-file)"
 
         echo """ .NET compile: SDK=$(params.build-version) """
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
         dotnet --version
 
-        # Goal: validate that the code compiles -- NOT produce the final artifact.
-        # Kaniko builds the Docker image using the Dockerfile which runs its own
-        # `dotnet publish` inside a multi-stage build. Doing publish here is
-        # redundant and hits permission issues creating output directories.
+        # Produces the final, deployable publish output here, in the compile
+        # Task, rather than relying on the Dockerfile's own `dotnet publish`
+        # inside Kaniko. Two reasons this changed from validate-only:
+        #  1. Credentials for private NuGet feeds (extra build-artifact-repo
+        #     credentials) are only available here, not inside Kaniko's
+        #     separate, differently-privileged build step.
+        #  2. The platform now requires every language's Dockerfile to COPY a
+        #     pre-built artifact rather than re-run the build tool inside
+        #     Kaniko (see verify-artifacts) -- consistent with how Java/Maven
+        #     already worked. Publishing to a workspace-relative path (not an
+        #     external /out) avoids the permission issue previously hit,
+        #     because this step already runs as the same non-root uid (65532)
+        #     that owns the whole workspace.
+        OUT_DIR="$(workspaces.source.path)/$(params.build-context)/publish-output"
         if [ -n "$BUILD_FILE" ]; then
           echo """ dotnet restore: $BUILD_FILE """
           dotnet restore "$BUILD_FILE"
           echo """ dotnet build: $BUILD_FILE """
           dotnet build "$BUILD_FILE" -c Release --no-restore
+          echo """ dotnet publish: $BUILD_FILE -> $OUT_DIR """
+          dotnet publish "$BUILD_FILE" -c Release --no-build -o "$OUT_DIR"
         else
           echo """ dotnet restore """
           dotnet restore
           echo """ dotnet build """
           dotnet build -c Release --no-restore
+          echo """ dotnet publish -> $OUT_DIR """
+          dotnet publish -c Release --no-build -o "$OUT_DIR"
         fi
 
         echo """ Build artifacts """
-        find . -path "*/bin/Release/*.dll" -not -path "*/obj/*" 2>/dev/null \
+        find "$OUT_DIR" -maxdepth 1 -type f 2>/dev/null \
           | while read f; do echo "  $(du -sh "$f" | cut -f1)  $f"; done
         echo """ .NET compile complete """
 
@@ -3503,12 +3956,102 @@ spec:
       default: "go.mod"
     - name: build-context
       default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
+    - name: goprivate
+      default: ""
+      description: "Comma-joined module-path prefixes for GOPRIVATE -- non-sensitive hostnames, baked in per-app by pipeline_builder.py. Empty for apps with no private Go module credential."
   workspaces:
     - name: source
     - name: go-cache
       optional: true
       description: "Persistent Go module cache (GOPATH/pkg/mod). Shared across runs."
+    - name: extra-build-creds
+      optional: true
+      description: "Consolidated Secret of {name}-username/{name}-token keys for this app's declared build-artifact-repo credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
   steps:
+    # Generic, identical script for every Go app -- writes .netrc into $HOME
+    # (Go's own standard mechanism for authenticating `go get`/`go mod
+    # download` against private module hosts). No-op when extra-creds-manifest
+    # is "[]" (every app that hasn't configured an extra credential).
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/usr/bin/env python3
+        import json, os, pathlib, stat
+
+        manifest = json.loads('''$(params.extra-creds-manifest)''')
+        creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        if not manifest:
+            print("No extra build-artifact-repo credentials declared -- skipping")
+        else:
+            lines = []
+            for cred in manifest:
+                name, host = cred["name"], cred["matchId"]
+                user = (creds_dir / f"{name}-username").read_text().strip()
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                lines.append(f"machine {host}\nlogin {user}\npassword {token}")
+            netrc = home / ".netrc"
+            netrc.write_text("\n".join(lines) + "\n")
+            netrc.chmod(stat.S_IRUSR | stat.S_IWUSR)   # go requires .netrc to not be world/group readable
+            print(f"Wrote {len(manifest)} Go module host credential(s) to {netrc}")
+
+        # Generic, identical for every language: export this app's declared
+        # external-service credentials (DB/Redis/Kafka/curl-scp-wget targets
+        # etc.) as a sourceable env file the compile step reads before
+        # invoking the build tool. No-op when the workspace isn't bound or no
+        # external-service credentials declared.
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time instead of embedding the value as
+        # literal text into the generated export line -- the value never
+        # passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-character content
+        # (quotes, $(...), newlines) can never break or inject into the line.
+        svc_lines: list[str] = []
+        # NOTE: each $(workspaces.<name>.path) must appear literally here --
+        # Tekton substitutes these as plain text before the script runs, so
+        # it cannot resolve one built from a Python loop variable.
+        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
+                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+
     - name: compile
       image: k8secops/k8secops:golang-$(params.build-version)-alpine
       imagePullPolicy: IfNotPresent
@@ -3536,16 +4079,27 @@ spec:
           value: "$(workspaces.source.path)/.gopath/cache"
         - name: GOMODCACHE
           value: "$(workspaces.source.path)/.gopath/pkg/mod"
+        - name: GOPRIVATE
+          value: "$(params.goprivate)"
       script: |
         #!/bin/sh
         set -e
         echo """ Go compile: version=$(params.build-version) """
 
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
         mkdir -p "$GOPATH/pkg/mod" "$GOCACHE"
 
         go mod download
         go build ./...
-        echo """ Go compile complete """
+        # Final, copyable artifact for verify-artifacts / the Dockerfile's
+        # COPY step -- `-o dir/` builds every main package found under ./...
+        # into that directory, robust whether the repo has one main at the
+        # root or several under cmd/*, no assumption about layout needed.
+        mkdir -p ./bin
+        go build -o ./bin/ ./...
+        echo """ Go compile complete -- binaries: """
+        ls -la ./bin/
 
 # Source: platform/tekton/tasks/build/compile-java-task.yaml
 ---
@@ -3567,12 +4121,124 @@ spec:
       default: "pom.xml"
     - name: build-context
       default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
   workspaces:
     - name: source
     - name: maven-cache
       optional: true
       description: "Persistent Maven local repository cache (~/.m2). Shared across runs to avoid re-downloading dependencies."
+    - name: extra-build-creds
+      optional: true
+      description: "Consolidated Secret of {name}-username/{name}-token keys for this app's declared build-artifact-repo credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
   steps:
+    # Generic, identical script for every Java app -- only extra-creds-manifest
+    # and the mounted Secret's contents vary per app/run. No-op (does nothing)
+    # when extra-creds-manifest is "[]" or the workspace isn't bound, so this
+    # step is a harmless no-op for every app that hasn't configured an extra
+    # build-artifact-repo credential.
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/usr/bin/env python3
+        import json, os, pathlib
+
+        manifest = json.loads('''$(params.extra-creds-manifest)''')
+        creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
+        build_tool = "$(params.build-tool)"
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        if not manifest:
+            print("No extra build-artifact-repo credentials declared -- skipping")
+        elif build_tool == "maven":
+            m2 = home / ".m2"
+            m2.mkdir(parents=True, exist_ok=True)
+            servers = []
+            for cred in manifest:
+                name = cred["name"]
+                user = (creds_dir / f"{name}-username").read_text().strip()
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                servers.append(
+                    f"    <server>\n      <id>{cred['matchId']}</id>\n"
+                    f"      <username>{user}</username>\n      <password>{token}</password>\n"
+                    f"    </server>")
+            (m2 / "settings.xml").write_text(
+                "<settings>\n  <servers>\n" + "\n".join(servers) + "\n  </servers>\n</settings>\n")
+            print(f"Wrote {len(manifest)} Maven <server> credential(s) to {m2}/settings.xml")
+        elif build_tool == "gradle":
+            # Gradle's own documented convention: ORG_GRADLE_PROJECT_xxx env
+            # vars become project property `xxx` automatically. The customer's
+            # build.gradle already references project.findProperty('<matchId>Username'/'Password')
+            # for this to work -- standard Gradle credential pattern, no platform-invented convention.
+            env_file = home / ".gradle-extra-creds.env"
+            lines = []
+            for cred in manifest:
+                name = cred["name"]
+                user = (creds_dir / f"{name}-username").read_text().strip()
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                lines.append(f"export ORG_GRADLE_PROJECT_{cred['matchId']}Username='{user}'")
+                lines.append(f"export ORG_GRADLE_PROJECT_{cred['matchId']}Password='{token}'")
+            env_file.write_text("\n".join(lines) + "\n")
+            print(f"Wrote {len(manifest)} Gradle credential env-export(s) to {env_file}")
+        else:
+            print(f"build-tool={build_tool}: extra build-artifact-repo credentials not applicable -- skipping")
+
+        # Generic, identical for every language: export this app's declared
+        # external-service credentials (DB/Redis/Kafka/curl-scp-wget targets
+        # etc.) as a sourceable env file the compile step reads before
+        # invoking the build tool -- same consolidated-Secret-as-files
+        # mechanism as extra-build-creds above, just exported as literal env
+        # vars instead of a tool-specific config file. No-op when the
+        # workspace isn't bound or no external-service credentials declared.
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time instead of embedding the value as
+        # literal text into the generated export line -- the value never
+        # passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-character content
+        # (quotes, $(...), newlines) can never break or inject into the line.
+        svc_lines: list[str] = []
+        # NOTE: each $(workspaces.<name>.path) must appear literally here --
+        # Tekton substitutes these as plain text before the script runs, so
+        # it cannot resolve one built from a Python loop variable.
+        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
+                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+
     - name: compile
       image: k8secops/k8secops:maven-3.9-eclipse-temurin-$(params.build-version)
       imagePullPolicy: IfNotPresent
@@ -3603,6 +4269,8 @@ spec:
         BUILD_FILE="$(params.build-file)"
         echo """ Java compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
 
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
         mkdir -p "$HOME/.m2" "$GRADLE_USER_HOME"
 
         # Use persistent cache PVC if mounted, otherwise fall back to source workspace
@@ -3628,6 +4296,9 @@ spec:
               | while read f; do echo "  $(du -sh "$f" | cut -f1)  $f"; done
             ;;
           gradle)
+            # Extra build-artifact-repo credentials (if declared) -- written by
+            # the materialize-build-creds step above; no-op if absent.
+            [ -f "$HOME/.gradle-extra-creds.env" ] && . "$HOME/.gradle-extra-creds.env"
             EXTRA=""
             [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "build.gradle" ] && EXTRA="-b $BUILD_FILE"
             # Prefer Gradle Wrapper if the project ships one
@@ -3663,12 +4334,101 @@ spec:
       default: "package.json"
     - name: build-context
       default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
   workspaces:
     - name: source
     - name: npm-cache
       optional: true
       description: "Persistent npm cache (~/.npm). Shared across runs to avoid re-downloading packages."
+    - name: extra-build-creds
+      optional: true
+      description: "Consolidated Secret of {name}-username/{name}-token keys for this app's declared build-artifact-repo credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
   steps:
+    # Generic, identical script for every Node.js app -- writes .npmrc into
+    # $HOME (npm's own standard discovery location), which the compile step
+    # below reads via its own HOME=$(workspaces.source.path)/.compile-home.
+    # No-op when extra-creds-manifest is "[]" (every app that hasn't
+    # configured an extra credential).
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/usr/bin/env python3
+        import json, os, pathlib
+
+        manifest = json.loads('''$(params.extra-creds-manifest)''')
+        creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        if not manifest:
+            print("No extra build-artifact-repo credentials declared -- skipping")
+        else:
+            lines = []
+            for cred in manifest:
+                name, host = cred["name"], cred["matchId"]
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                # npm's standard documented convention: a per-registry auth token
+                # line in .npmrc. Project-relative .npmrc also works (npm checks
+                # cwd before $HOME), but $HOME is sufficient here since the
+                # compile step's cwd and $HOME are both under the same workspace.
+                lines.append(f"//{host}/:_authToken={token}")
+            (home / ".npmrc").write_text("\n".join(lines) + "\n")
+            print(f"Wrote {len(manifest)} npm registry credential(s) to {home}/.npmrc")
+
+        # Generic, identical for every language: export this app's declared
+        # external-service credentials (DB/Redis/Kafka/curl-scp-wget targets
+        # etc.) as a sourceable env file the compile step reads before
+        # invoking the build tool. No-op when the workspace isn't bound or no
+        # external-service credentials declared.
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time instead of embedding the value as
+        # literal text into the generated export line -- the value never
+        # passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-character content
+        # (quotes, $(...), newlines) can never break or inject into the line.
+        svc_lines: list[str] = []
+        # NOTE: each $(workspaces.<name>.path) must appear literally here --
+        # Tekton substitutes these as plain text before the script runs, so
+        # it cannot resolve one built from a Python loop variable.
+        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
+                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+
     - name: compile
       image: k8secops/k8secops:node-$(params.build-version)-alpine
       imagePullPolicy: IfNotPresent
@@ -3694,6 +4454,8 @@ spec:
         set -e
         BUILD_TOOL="$(params.build-tool)"
         echo """ Node.js compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
+
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
 
         mkdir -p "$HOME"
 
@@ -3735,7 +4497,11 @@ metadata:
   labels:
     gitops-platform.io/stage: compile
 spec:
-  description: "Python compile -- install dependencies and validate syntax (py_compile). Python is interpreted so no binary artifact is produced."
+  description: >
+    Python compile -- install dependencies into a copyable ./vendor
+    virtualenv and validate syntax (py_compile). Python is interpreted, so
+    "the artifact" is the populated virtualenv itself, which the Dockerfile
+    COPYs in rather than re-running the install (see verify-artifacts).
   params:
     - name: build-tool
       default: "pip"
@@ -3745,9 +4511,95 @@ spec:
       default: "requirements.txt"
     - name: build-context
       default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
   workspaces:
     - name: source
+    - name: extra-build-creds
+      optional: true
+      description: "Consolidated Secret of {name}-username/{name}-token keys for this app's declared build-artifact-repo credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
   steps:
+    # Generic, identical script for every Python app -- writes PIP_EXTRA_INDEX_URL
+    # exports (pip's own documented convention for a private package index)
+    # to a file the compile step sources. No-op when extra-creds-manifest is
+    # "[]" (every app that hasn't configured an extra credential).
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/usr/bin/env python3
+        import json, os, pathlib
+
+        manifest = json.loads('''$(params.extra-creds-manifest)''')
+        creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        if not manifest:
+            print("No extra build-artifact-repo credentials declared -- skipping")
+        else:
+            urls = []
+            for cred in manifest:
+                name, host = cred["name"], cred["matchId"]
+                user = (creds_dir / f"{name}-username").read_text().strip()
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                urls.append(f"https://{user}:{token}@{host}/simple/")
+            env_file = home / ".pip-extra-creds.env"
+            env_file.write_text(f"export PIP_EXTRA_INDEX_URL='{' '.join(urls)}'\n")
+            print(f"Wrote {len(manifest)} pip private-index credential(s) to {env_file}")
+
+        # Generic, identical for every language: export this app's declared
+        # external-service credentials (DB/Redis/Kafka/curl-scp-wget targets
+        # etc.) as a sourceable env file the compile step reads before
+        # invoking the build tool. No-op when the workspace isn't bound or no
+        # external-service credentials declared.
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time instead of embedding the value as
+        # literal text into the generated export line -- the value never
+        # passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-character content
+        # (quotes, $(...), newlines) can never break or inject into the line.
+        svc_lines: list[str] = []
+        # NOTE: each $(workspaces.<name>.path) must appear literally here --
+        # Tekton substitutes these as plain text before the script runs, so
+        # it cannot resolve one built from a Python loop variable.
+        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
+                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+
     - name: compile
       image: k8secops/k8secops:python-$(params.build-version)-slim
       imagePullPolicy: IfNotPresent
@@ -3764,9 +4616,8 @@ spec:
         requests: {cpu: "200m", memory: "256Mi"}
         limits:   {cpu: "1000m", memory: "1Gi"}
       env:
-        # uid 1000 has no /etc/passwd entry, so $HOME is empty and
-        # pip install --user has nowhere writable to land. Point HOME
-        # to the source workspace so --user installs land in .compile-home/.local
+        # uid 1000 has no /etc/passwd entry, so $HOME is empty -- point it at
+        # the source workspace for pip's own cache/config discovery.
         - name: HOME
           value: "$(workspaces.source.path)/.compile-home"
       script: |
@@ -3777,31 +4628,39 @@ spec:
         echo """ Python compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
 
         mkdir -p "$HOME"
+        [ -f "$HOME/.pip-extra-creds.env" ] && . "$HOME/.pip-extra-creds.env"
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
 
         # Always upgrade pip first -- avoids version notice noise and ensures
         # consistent behaviour across base images that ship older pip versions
         pip install --upgrade pip --quiet --user --break-system-packages 2>/dev/null || true
 
-        # Install dependencies
+        # Final, copyable artifact: a real virtualenv at ./vendor, populated
+        # by whichever tool the app uses. The Dockerfile COPYs this directory
+        # in and puts its bin/ on PATH -- console-script entry points
+        # (uvicorn, gunicorn, flask, etc.) keep working, unlike a bare
+        # PYTHONPATH-only package dump.
+        python -m venv ./vendor
+        . ./vendor/bin/activate
+
         if [ -f "$BUILD_FILE" ] && [ "$BUILD_TOOL" = "pip" ]; then
-          pip install -r "$BUILD_FILE" --quiet --user --break-system-packages
+          pip install -r "$BUILD_FILE" --quiet
         elif [ "$BUILD_TOOL" = "poetry" ]; then
-          pip install poetry --quiet --user --break-system-packages
+          pip install poetry --quiet
           poetry install --no-interaction --quiet
         elif [ "$BUILD_TOOL" = "pdm" ]; then
-          pip install pdm --quiet --user --break-system-packages
+          pip install pdm --quiet
           pdm install --no-self 2>/dev/null || pdm install
         elif [ "$BUILD_TOOL" = "pipenv" ]; then
-          pip install pipenv --quiet --user --break-system-packages
-          pipenv install --deploy --system --quiet
+          pip install pipenv --quiet
+          PIPENV_VENV_IN_PROJECT=0 pipenv install --deploy --quiet
         elif [ "$BUILD_TOOL" = "uv" ]; then
-          pip install uv --quiet --user --break-system-packages
-          uv pip install -r "${BUILD_FILE:-requirements.txt}" --system 2>/dev/null || \
-            uv pip install -r "${BUILD_FILE:-requirements.txt}"
+          pip install uv --quiet
+          uv pip install -r "${BUILD_FILE:-requirements.txt}"
         elif [ -f "requirements.txt" ]; then
-          pip install -r requirements.txt --quiet --user --break-system-packages \
-            --no-warn-script-location
+          pip install -r requirements.txt --quiet --no-warn-script-location
         fi
+        deactivate
 
         # Syntax validation -- catches import errors and syntax mistakes early.
         # PYTHONPYCACHEPREFIX redirects bytecode writes to /tmp so py_compile
@@ -3811,14 +4670,14 @@ spec:
         find . -name "*.py" \
           -not -path "./.git/*" \
           -not -path "./node_modules/*" \
-          -not -path "./*venv*/*" \
+          -not -path "./vendor/*" \
           -not -path "./.compile-home/*" \
           -not -path "*/__pycache__/*" \
           -not -path "*/__pycache__" \
           | PYTHONPYCACHEPREFIX=/tmp/pycache xargs python -m py_compile 2>&1 \
           && echo "All .py files syntax-valid"
 
-        echo """ Python compile complete """
+        echo """ Python compile complete -- vendor/ ready for Dockerfile COPY """
 
 # Source: platform/tekton/tasks/build/compile-task.yaml
 ---
@@ -4433,13 +5292,46 @@ spec:
             tool_breakdown[tool][sev]   += 1
             tool_breakdown[tool]["total"] += 1
         
-        #  Supply chain (from image category) 
+        #  Supply chain (from image category)
         img_cat = categories.get("image", {})
         supply_chain = {
             "sbomGenerated": img_cat.get("sbom_generated", False),
             "sbomComponents": img_cat.get("sbom_components", 0),
             "imageSigned": False,
         }
+
+        #  Secret-injection-ladder posture (derived from secrets/sast rung fields)
+        # No extra AI call -- secrets/sast sub-tasks already tagged findings with a
+        # rung (see config-secret-injection-patterns ladder: 0=hard-coded ... 7=sidecar
+        # injection). Lower rung = worse. Only findings the sub-tasks could actually
+        # see (committed source/manifests) ever carry a rung; runtime-only rungs
+        # (3/6/7) never appear here by construction.
+        RUNG_LABELS = {
+            0: "Hard-coded (committed to source)",
+            1: "Build-time bake",
+            2: "Deploy-time render (committed to git)",
+            3: "Container start-time render",
+            4: "Runtime env var (literal)",
+            5: "Runtime mounted file (no rotation)",
+            6: "Runtime SDK fetch (workload identity)",
+            7: "Sidecar/agent injection",
+        }
+        rung_findings = [f for f in all_ai_findings if f.get("rung") is not None]
+        secret_posture = None
+        if rung_findings:
+            rung_counts = {}
+            for f in rung_findings:
+                r = f["rung"]
+                rung_counts[r] = rung_counts.get(r, 0) + 1
+            worst_rung = min(rung_counts.keys())
+            secret_posture = {
+                "worstRung":      worst_rung,
+                "worstRungLabel": RUNG_LABELS.get(worst_rung, "Unknown"),
+                "findingsByRung": [
+                    {"rung": r, "label": RUNG_LABELS.get(r, "Unknown"), "count": c}
+                    for r, c in sorted(rung_counts.items())
+                ],
+            }
         
         #  Category analysis for chat enrichment 
         category_analysis = {
@@ -4487,6 +5379,7 @@ spec:
             "categoryBreakdown":      category_breakdown,
             "toolBreakdown":          tool_breakdown,
             "supplyChain":            supply_chain,
+            "secretPosture":          secret_posture,
             "pipelineFailureAnalysis": pfa,
             "categoryAnalysis":       category_analysis,
             'scanGaps':               scan_gaps,
@@ -5020,12 +5913,24 @@ spec:
                 "Analyse these SAST findings and return a JSON report.\n\n"
                 f"FINDINGS ({len(findings)} total):\n"
                 f"{json.dumps(findings[:30], indent=2)}\n\n"
+                "For findings that are specifically about HOW A SECRET/CREDENTIAL IS WIRED "
+                "(e.g. a Checkov rule on a literal `value:` instead of `valueFrom.secretKeyRef` "
+                "in a K8s manifest, a hardcoded credential default, missing CSI/ExternalSecret/"
+                "Vault-Agent annotations), also classify which rung of the secret-injection-"
+                "maturity ladder it represents and set rung/rung_label. Leave rung null for "
+                "findings unrelated to secret handling (injection, auth bypass, XSS, etc).\n"
+                "  0 = hard-coded literal in source\n"
+                "  2 = K8s/Helm manifest committed to git rendering a secret value\n"
+                "  4 = Secret env var sourced from a literal `value:` instead of "
+                "`valueFrom.secretKeyRef` or an external-secret reference\n"
+                "  5 = mounted-file pattern present but not backed by tmpfs/CSI rotation\n\n"
                 "Respond with JSON only:\n"
                 '{"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED",'
                 '"summary":"1-3 sentences on the SAST posture",'
                 '"findings":['
                 '{"tool":"","severity":"","title":"","location":"",'
-                '"cve":"","fix_version":"","impact":"","fix_description":"","fix_code":""}'
+                '"cve":"","fix_version":"","impact":"","fix_description":"","fix_code":"",'
+                '"rung":null,"rung_label":""}'
                 ']}\n\n'
                 "Rules: BLOCK if injection, auth bypass, or RCE found at HIGH or CRITICAL. "
                 "fix_code must be an exact corrected code snippet. "
@@ -5488,6 +6393,22 @@ spec:
 
         ran = sarif.exists() or th.exists()
 
+        # "" Secret-injection-ladder rung heuristic (fallback when AI unavailable) ""
+        # Rung 0=hard-coded, 1=build-time bake, 2=deploy-time render (lands in git),
+        # 4=runtime env var literal. Gitleaks/TruffleHog only ever see committed
+        # source, so rungs 3/5/6/7 (container-start/mounted-file/SDK/sidecar) never
+        # apply here -- those resolve at runtime, after the value has already left git.
+        def _guess_rung(loc):
+            l = (loc or "").lower()
+            if "dockerfile" in l:
+                return 1, "Build-time bake"
+            if any(l.endswith(ext) for ext in (".yaml", ".yml")) and \
+               any(k in l for k in ("k8s", "manifest", "deploy", "helm", "chart")):
+                return 2, "Deploy-time render (committed to git)"
+            if ".env" in l or "appsettings" in l or "config" in l:
+                return 4, "Runtime env var (literal, committed)"
+            return 0, "Hard-coded (committed to source)"
+
         # "" Call AI """""""""""""""""""""""""""""""""""""""""""
         ai_findings = []
         summary = ""
@@ -5546,13 +6467,27 @@ spec:
                 "return a JSON analysis.\n\n"
                 f"FINDINGS ({len(findings)} total, sorted by severity):\n"
                 f"{json.dumps(findings[:30], indent=2)}\n\n"
+                "For each finding, also classify which rung of the secret-injection-maturity "
+                "ladder it represents, based on the file location/content:\n"
+                "  0 = hard-coded literal committed to source\n"
+                "  1 = build-time token replace / bundled into the built artifact (e.g. Dockerfile "
+                "ARG/ENV baked at build, Node NEXT_PUBLIC_*/VITE_* inlined into a bundle, Maven/Gradle "
+                "resource filtering)\n"
+                "  2 = deploy-time rendered manifest that still landed in git (e.g. committed Helm "
+                "output, a plain Kustomize secretGenerator result)\n"
+                "  4 = runtime env var with the secret value given literally instead of via a "
+                "secretKeyRef/external reference\n"
+                "A static secrets scanner only ever sees what's committed to source, so rungs "
+                "3/5/6/7 (container-start render, mounted file, SDK fetch, sidecar injection) never "
+                "apply to these findings -- pick the closest of 0/1/2/4.\n\n"
                 "Respond with JSON only:\n"
                 '{"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED",'
                 '"summary":"1-3 sentences on what was found and risk",'
                 '"findings":['
                 '{"tool":"","severity":"CRITICAL|HIGH|MEDIUM|LOW","title":"","location":"",'
                 '"cve":"","fix_version":"","impact":"consequence if not fixed",'
-                '"fix_description":"what to do","fix_code":""}'
+                '"fix_description":"what to do","fix_code":"",'
+                '"rung":0,"rung_label":"Hard-coded (committed to source)"}'
                 ']}\n\n'
                 "Rules: BLOCK if any verified secret exists. "
                 "Verified secrets = CRITICAL. "
@@ -5593,7 +6528,9 @@ spec:
                  "location": f.get("location",""), "cve": "", "fix_version": "",
                  "impact": "Active credential -- immediate account compromise risk.",
                  "fix_description": "Rotate/revoke the credential, then remove from git history.",
-                 "fix_code": ""}
+                 "fix_code": "",
+                 "rung": _guess_rung(f.get("location",""))[0],
+                 "rung_label": _guess_rung(f.get("location",""))[1]}
                 for f in findings[:10]
             ],
             "all_raw": [{"tool": f["tool"], "severity": f["severity"], "title": f["title"][:120],
@@ -5973,3 +6910,277 @@ spec:
 
         (OUT_DIR / "tests.json").write_text(json.dumps(result, indent=2))
         print(f"Tests analysis written: verdict={result['verdict']} root_cause={root_cause} tests_ran={tests_ran}")
+
+# Source: platform/tekton/tasks/ai/ai-preflight.yaml
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-ai-preflight
+  namespace: tekton-pipelines
+  labels:
+    gitops-platform.io/stage: build
+spec:
+  description: |
+    Runs immediately after clone, before compile/build. Scans the source tree
+    for the build manifest (pom.xml/package.json/go.mod/*.csproj/requirements.txt
+    etc.) and Dockerfile the pipeline is about to use, and auto-corrects
+    build-file/build-context/dockerfile-path when the configured value doesn't
+    exist on disk but exactly one real candidate does. When more than one
+    candidate exists, asks AI to pick -- constrained to choosing only from the
+    real candidates found on disk, never inventing a path. Always passes
+    through the original values unchanged on any failure or when nothing is
+    fixable -- this task never blocks the pipeline; gitops-pre-build (which
+    runs after compile) remains the hard gate on missing artifacts.
+  params:
+    - name: language
+      type: string
+    - name: build-tool
+      type: string
+    - name: build-file
+      type: string
+    - name: build-context
+      type: string
+    - name: dockerfile-path
+      type: string
+    - name: pipeline-run-id
+      type: string
+    - name: operator-api-url
+      type: string
+  workspaces:
+    - name: source
+      readOnly: true
+    - name: ai-credentials
+      description: "Secret with aiProvider, aiApiKey, aiModel files"
+  results:
+    - name: BUILD_FILE
+    - name: BUILD_CONTEXT
+    - name: DOCKERFILE_PATH
+    - name: PREFLIGHT_NOTE
+  steps:
+    - name: preflight
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "100m", memory: "128Mi"}
+        limits:   {cpu: "300m", memory: "256Mi"}
+      script: |
+        #!/usr/bin/env python3
+        import fnmatch, json, os, pathlib, re, sys, time
+        import urllib.request, urllib.error, urllib.parse
+
+        def _sanitize(s):
+            return "".join(c for c in (s or "").strip() if c.isprintable() and c not in "\r\n\t\x00")
+
+        SRC              = pathlib.Path("$(workspaces.source.path)")
+        LANGUAGE         = "$(params.language)"
+        BUILD_TOOL       = "$(params.build-tool)"
+        BUILD_FILE       = "$(params.build-file)"
+        BUILD_CONTEXT    = "$(params.build-context)"
+        DOCKERFILE_PATH  = "$(params.dockerfile-path)"
+
+        def write_results(build_file, build_context, dockerfile_path, note):
+            pathlib.Path("$(results.BUILD_FILE.path)").write_text(build_file)
+            pathlib.Path("$(results.BUILD_CONTEXT.path)").write_text(build_context)
+            pathlib.Path("$(results.DOCKERFILE_PATH.path)").write_text(dockerfile_path)
+            pathlib.Path("$(results.PREFLIGHT_NOTE.path)").write_text(note[:1000])
+
+        try:
+            AI_PROVIDER = AI_API_KEY = AI_MODEL = ""
+            try:
+                _creds = pathlib.Path("$(workspaces.ai-credentials.path)")
+                AI_PROVIDER = _sanitize((_creds / "aiProvider").read_text())
+                AI_API_KEY  = _sanitize((_creds / "aiApiKey").read_text())
+                _mf = _creds / "aiModel"
+                AI_MODEL = _sanitize(_mf.read_text()) if _mf.exists() else ""
+                if not AI_MODEL:
+                    AI_MODEL = {
+                        "anthropic": "claude-haiku-4-5-20251001",
+                        "openai":    "gpt-4o-mini",
+                        "gemini":    "gemini-2.0-flash",
+                    }.get(AI_PROVIDER, "")
+            except Exception as e:
+                print(f"Credentials: {e}")
+
+            MANIFEST_GLOBS = {
+                "maven":  ["pom.xml"],
+                "gradle": ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"],
+                "npm":    ["package.json"], "yarn": ["package.json"], "pnpm": ["package.json"],
+                "go":     ["go.mod"],
+                "dotnet": ["*.csproj", "*.sln"],
+                "pip":    ["requirements.txt", "pyproject.toml", "Pipfile"],
+                "poetry": ["pyproject.toml"], "pdm": ["pyproject.toml"],
+                "pipenv": ["Pipfile"], "uv": ["pyproject.toml"],
+            }
+            IGNORE_DIRS = {".git", "node_modules", ".venv", "venv", "vendor", "target", "build",
+                            "dist", ".next", "bin", "obj", "__pycache__", ".m2", ".gradle"}
+
+            def walk(max_files=4000):
+                files = []
+                for root, dirs, fnames in os.walk(SRC):
+                    dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith(".")]
+                    for fn in fnames:
+                        files.append(str((pathlib.Path(root) / fn).relative_to(SRC)))
+                        if len(files) >= max_files:
+                            return files
+                return files
+
+            all_files = walk()
+            print(f"Repo fingerprint: {len(all_files)} files scanned (build-tool={BUILD_TOOL}, language={LANGUAGE})")
+
+            def find(patterns):
+                out = [f for f in all_files if any(fnmatch.fnmatch(pathlib.Path(f).name, p) for p in patterns)]
+                return sorted(out, key=len)  # shallower paths first
+
+            def exists(rel):
+                return bool(rel) and (SRC / rel).exists()
+
+            manifest_candidates   = find(MANIFEST_GLOBS.get(BUILD_TOOL, []))
+            dockerfile_candidates = find(["Dockerfile", "Dockerfile.*", "*.dockerfile"])
+
+            fixed_build_file      = BUILD_FILE
+            fixed_dockerfile_path = DOCKERFILE_PATH
+            fixed_build_context   = BUILD_CONTEXT
+            notes = []
+
+            # -- build-file --
+            if BUILD_FILE and not exists(BUILD_FILE):
+                if len(manifest_candidates) == 1:
+                    fixed_build_file = manifest_candidates[0]
+                    notes.append(f"build-file '{BUILD_FILE}' not found; auto-corrected to "
+                                 f"'{fixed_build_file}' (only {BUILD_TOOL} manifest in repo).")
+                elif len(manifest_candidates) > 1:
+                    notes.append(f"build-file '{BUILD_FILE}' not found; {len(manifest_candidates)} "
+                                 f"candidates exist ({', '.join(manifest_candidates[:5])}) -- ambiguous.")
+                else:
+                    notes.append(f"build-file '{BUILD_FILE}' not found and no {BUILD_TOOL} manifest "
+                                 f"exists anywhere in the repo -- compile will likely fail.")
+            elif not BUILD_FILE and manifest_candidates:
+                fixed_build_file = manifest_candidates[0]
+                notes.append(f"build-file was empty; defaulted to '{fixed_build_file}'.")
+
+            # -- dockerfile-path --
+            if DOCKERFILE_PATH and not exists(DOCKERFILE_PATH):
+                if len(dockerfile_candidates) == 1:
+                    fixed_dockerfile_path = dockerfile_candidates[0]
+                    notes.append(f"dockerfile-path '{DOCKERFILE_PATH}' not found; auto-corrected to "
+                                 f"'{fixed_dockerfile_path}'.")
+                elif len(dockerfile_candidates) > 1:
+                    notes.append(f"dockerfile-path '{DOCKERFILE_PATH}' not found; "
+                                 f"{len(dockerfile_candidates)} candidates exist -- ambiguous.")
+                else:
+                    notes.append(f"No Dockerfile found at '{DOCKERFILE_PATH}' or elsewhere -- "
+                                 f"pre-build will generate a default for {LANGUAGE}.")
+
+            # -- build-context: must be a real directory --
+            if BUILD_CONTEXT and not (SRC / BUILD_CONTEXT).is_dir():
+                notes.append(f"build-context '{BUILD_CONTEXT}' is not a directory in the repo -- "
+                             f"leaving as-is, Kaniko will fail if truly invalid.")
+
+            # -- Ambiguous cases: ask AI to choose, constrained to real candidates only --
+            ambiguous = ((BUILD_FILE and not exists(BUILD_FILE) and len(manifest_candidates) > 1) or
+                         (DOCKERFILE_PATH and not exists(DOCKERFILE_PATH) and len(dockerfile_candidates) > 1))
+
+            def call_ai(prompt):
+                if not AI_PROVIDER or not AI_API_KEY:
+                    return None
+                for attempt in range(2):
+                    try:
+                        if AI_PROVIDER == "anthropic":
+                            req = urllib.request.Request(
+                                "https://api.anthropic.com/v1/messages",
+                                data=json.dumps({"model": AI_MODEL, "max_tokens": 512,
+                                    "messages": [{"role": "user", "content": prompt}]}).encode(),
+                                headers={"x-api-key": AI_API_KEY, "anthropic-version": "2023-06-01",
+                                         "content-type": "application/json"},
+                                method="POST",
+                            )
+                        elif AI_PROVIDER == "gemini":
+                            _k = urllib.parse.quote(AI_API_KEY, safe="")
+                            _m = urllib.parse.quote(AI_MODEL, safe="")
+                            req = urllib.request.Request(
+                                f"https://generativelanguage.googleapis.com/v1beta/models/{_m}:generateContent?key={_k}",
+                                data=json.dumps({"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                                    "systemInstruction": {"parts": [{"text": "Respond with valid JSON only."}]},
+                                    "generationConfig": {"maxOutputTokens": 512}}).encode(),
+                                headers={"Content-Type": "application/json"},
+                                method="POST",
+                            )
+                        else:
+                            req = urllib.request.Request(
+                                "https://api.openai.com/v1/chat/completions",
+                                data=json.dumps({"model": AI_MODEL, "max_tokens": 512,
+                                    "messages": [{"role": "system", "content": "Respond with valid JSON only."},
+                                                 {"role": "user",   "content": prompt}]}).encode(),
+                                headers={"Authorization": f"Bearer {AI_API_KEY}",
+                                         "Content-Type": "application/json"},
+                                method="POST",
+                            )
+                        with urllib.request.urlopen(req, timeout=30) as r:
+                            data = json.loads(r.read())
+                        if AI_PROVIDER == "anthropic":
+                            return data["content"][0]["text"]
+                        elif AI_PROVIDER == "gemini":
+                            return data["candidates"][0]["content"]["parts"][0]["text"]
+                        else:
+                            return data["choices"][0]["message"]["content"]
+                    except Exception as e:
+                        print(f"AI attempt {attempt+1}: {e}")
+                        time.sleep(2)
+                return None
+
+            if ambiguous and AI_PROVIDER and AI_API_KEY:
+                prompt = (
+                    "You are a build-engineering assistant. A CI pipeline is about to compile and "
+                    "containerize a repository but its configured build paths don't match what "
+                    "exists on disk. Choose the correct path STRICTLY from the candidate lists "
+                    "below -- never invent a path that isn't listed. If no candidate is clearly "
+                    "correct, return null for that field.\n\n"
+                    f"Language: {LANGUAGE}  Build tool: {BUILD_TOOL}\n"
+                    f"Configured build-file: '{BUILD_FILE}' (exists: {exists(BUILD_FILE)})\n"
+                    f"Candidate build manifests found: {json.dumps(manifest_candidates[:20])}\n"
+                    f"Configured dockerfile-path: '{DOCKERFILE_PATH}' (exists: {exists(DOCKERFILE_PATH)})\n"
+                    f"Candidate Dockerfiles found: {json.dumps(dockerfile_candidates[:20])}\n\n"
+                    "Respond with JSON only: "
+                    '{"build_file":"<one candidate or null>","dockerfile_path":"<one candidate or null>",'
+                    '"reasoning":"1-2 sentences"}'
+                )
+                raw = call_ai(prompt)
+                if raw:
+                    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
+                    raw = re.sub(r"\s*```$", "", raw.strip(), flags=re.MULTILINE)
+                    try:
+                        sugg = json.loads(raw.strip())
+                        bf = sugg.get("build_file")
+                        # Defensive: only ever accept a path AI actually saw in the
+                        # candidate list -- never trust a hallucinated suggestion.
+                        if bf and bf in manifest_candidates:
+                            fixed_build_file = bf
+                            notes.append(f"AI selected build-file '{bf}': {sugg.get('reasoning','')}")
+                        dp = sugg.get("dockerfile_path")
+                        if dp and dp in dockerfile_candidates:
+                            fixed_dockerfile_path = dp
+                            notes.append(f"AI selected dockerfile-path '{dp}': {sugg.get('reasoning','')}")
+                    except Exception as e:
+                        print(f"AI suggestion parse failed: {e}")
+
+            note = " | ".join(notes) if notes else "No build-path issues detected."
+            print(f"Preflight: {note}")
+            write_results(fixed_build_file, fixed_build_context, fixed_dockerfile_path, note)
+
+        except Exception as e:
+            # Never block the pipeline on a preflight bug -- pass the original,
+            # unmodified params straight through. gitops-pre-build (post-compile)
+            # remains the real safety net for genuinely missing artifacts.
+            print(f"Preflight error (passing through original params): {e}")
+            write_results(BUILD_FILE, BUILD_CONTEXT, DOCKERFILE_PATH,
+                          f"Preflight check failed ({e}); using configured values unchanged.")
+
+        print("Preflight complete.")
