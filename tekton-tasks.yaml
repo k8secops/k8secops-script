@@ -1765,7 +1765,7 @@ spec:
         #!/bin/bash
         [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
         mkdir -p "$HOME"
-        pip install --quiet --user pytest pytest-cov pytest-xml --break-system-packages
+        pip install --quiet --user pytest pytest-cov --break-system-packages
 
         BUILD_FILE="$(params.build-file)"
         if [ -f "$BUILD_FILE" ]; then pip install --quiet --user -r "$BUILD_FILE" --break-system-packages 2>/dev/null || true; fi
