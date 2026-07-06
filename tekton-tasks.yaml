@@ -4948,7 +4948,7 @@ spec:
               key: operatorApiToken
       script: |
         #!/usr/bin/env python3
-        import json, os, re, pathlib, sys, time, urllib.request, urllib.error, urllib.parse
+        import json, os, re, pathlib, sys, textwrap, time, urllib.request, urllib.error, urllib.parse
         
         sys.stdout.reconfigure(line_buffering=True)
         
@@ -5126,6 +5126,18 @@ spec:
         tests_root_cause = tests_cat.get("root_cause","unknown")
         tests_ran = tests_cat.get("tests_ran", True)
         
+        # Static rules/schema text lives in ai/prompts/aggregate-rules.txt --
+        # kept out of this script to stay under the repo's 250-line convention.
+        AGGREGATE_RULES = textwrap.dedent("""
+        Respond with JSON only:
+        {"recommendation":"Begin with one of: I recommend proceeding / I recommend proceeding with caution / I do not recommend proceeding. Then 2-4 sentences citing the most critical category findings by name.","executive_summary":"2-4 sentences for an engineering manager  overall posture, key risks, what must be fixed before release.","pipeline_failure_analysis":{"stage":"","root_cause":"","recommended_fix":""}} or set pipeline_failure_analysis to null if no pipeline failures.
+        
+        Rules:
+        - If tests_ran=false and root_cause=compile_error: the recommendation MUST state tests did not run due to a build failure.
+        - Cite specific categories (e.g. 'secrets scan found a verified credential') not generic phrases.
+        - pipeline_failure_analysis: diagnose only if PIPELINE FAILURES are listed. Focus on the root cause, not cascaded failures.
+        - Respond with valid JSON only, no markdown.
+        """).strip()
         prompt = (
             "You are a senior security engineer synthesising findings from 5 parallel security analyses.\n\n"
             f"Application: $(params.app-name)\n"
@@ -5139,17 +5151,7 @@ spec:
             f"tests_ran={tests_ran}  root_cause={tests_root_cause}\n"
             f"RISK GRADE: {risk_grade}  VERDICT: {verdict}"
             f"{failure_block}\n\n"
-            "Respond with JSON only:\n"
-            '{"recommendation":"Begin with one of: I recommend proceeding / I recommend proceeding with caution / I do not recommend proceeding. Then 2-4 sentences citing the most critical category findings by name.",'
-            '"executive_summary":"2-4 sentences for an engineering manager  overall posture, key risks, what must be fixed before release.",'
-            '"pipeline_failure_analysis":{"stage":"","root_cause":"","recommended_fix":""}}'
-            " or set pipeline_failure_analysis to null if no pipeline failures.\n\n"
-            "Rules:\n"
-            "- If tests_ran=false and root_cause=compile_error: the recommendation MUST state tests did not run due to a build failure.\n"
-            "- Cite specific categories (e.g. 'secrets scan found a verified credential') not generic phrases.\n"
-            "- pipeline_failure_analysis: diagnose only if PIPELINE FAILURES are listed. Focus on the root cause, not cascaded failures.\n"
-            "- Respond with valid JSON only, no markdown."
-        )
+        ) + AGGREGATE_RULES
         
         def call_ai(p):
             if not AI_PROVIDER or not AI_API_KEY:
@@ -5464,7 +5466,7 @@ spec:
               key: operatorApiToken
       script: |
         #!/usr/bin/env python3
-        import json, os, re, pathlib, time, urllib.request, urllib.error, urllib.parse
+        import json, os, re, pathlib, textwrap, time, urllib.request, urllib.error, urllib.parse
 
         def _sanitize(s):
             return "".join(c for c in (s or "").strip() if c.isprintable() and c not in "\r\n\t\x00")
@@ -5608,6 +5610,14 @@ spec:
                     time.sleep(3 * (attempt + 1))
             return None
 
+        # Static rules/schema text lives in ai/prompts/image-rules.txt --
+        # kept out of this script to stay under the repo's 250-line convention.
+        IMAGE_RULES = textwrap.dedent("""
+        Respond with JSON only:
+        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","summary":"1-3 sentences on image security posture and supply chain","findings":[{"tool":"","severity":"","title":"","location":"","cve":"exact CVE or empty","fix_version":"min safe version or empty","impact":"","fix_description":"","fix_code":""}]}
+        
+        Rules: BLOCK if CRITICAL CVE with fix version exists. cve and fix_version must come from the source data -- never invent. Respond with valid JSON only, no markdown.
+        """).strip()
         if findings or sbom_generated:
             sbom_note = (f"SBOM: {sbom_components} components catalogued."
                          if sbom_generated else "SBOM: not generated.")
@@ -5616,18 +5626,7 @@ spec:
                 f"IMAGE FINDINGS ({len(findings)} total, sorted by severity):\n"
                 f"{json.dumps(findings[:30], indent=2)}\n\n"
                 f"SUPPLY CHAIN: {sbom_note}\n\n"
-                "Respond with JSON only:\n"
-                '{"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED",'
-                '"summary":"1-3 sentences on image security posture and supply chain",'
-                '"findings":['
-                '{"tool":"","severity":"","title":"","location":"",'
-                '"cve":"exact CVE or empty","fix_version":"min safe version or empty",'
-                '"impact":"","fix_description":"","fix_code":""}'
-                ']}\n\n'
-                "Rules: BLOCK if CRITICAL CVE with fix version exists. "
-                "cve and fix_version must come from the source data -- never invent. "
-                "Respond with valid JSON only, no markdown."
-            )
+            ) + IMAGE_RULES
             raw = call_ai(prompt)
             if raw:
                 raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
@@ -5726,7 +5725,7 @@ spec:
               key: operatorApiToken
       script: |
         #!/usr/bin/env python3
-        import json, os, re, pathlib, time, urllib.request, urllib.error, urllib.parse
+        import json, os, re, pathlib, textwrap, time, urllib.request, urllib.error, urllib.parse
 
         def _sanitize(s):
             return "".join(c for c in (s or "").strip() if c.isprintable() and c not in "\r\n\t\x00")
@@ -5907,35 +5906,27 @@ spec:
                     time.sleep(3 * (attempt + 1))
             return None
 
+        # Static rules/schema text lives in ai/prompts/sast-rules.txt --
+        # kept out of this script to stay under the repo's 250-line convention.
+        SAST_RULES = textwrap.dedent("""
+        For findings that are specifically about HOW A SECRET/CREDENTIAL IS WIRED (e.g. a Checkov rule on a literal `value:` instead of `valueFrom.secretKeyRef` in a K8s manifest, a hardcoded credential default, missing CSI/ExternalSecret/Vault-Agent annotations), also classify which rung of the secret-injection-maturity ladder it represents and set rung/rung_label. Leave rung null for findings unrelated to secret handling (injection, auth bypass, XSS, etc).
+          0 = hard-coded literal in source
+          2 = K8s/Helm manifest committed to git rendering a secret value
+          4 = Secret env var sourced from a literal `value:` instead of `valueFrom.secretKeyRef` or an external-secret reference
+          5 = mounted-file pattern present but not backed by tmpfs/CSI rotation
+        
+        Respond with JSON only:
+        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","summary":"1-3 sentences on the SAST posture","findings":[{"tool":"","severity":"","title":"","location":"","cve":"","fix_version":"","impact":"","fix_description":"","fix_code":"","rung":null,"rung_label":""}]}
+        
+        Rules: BLOCK if injection, auth bypass, or RCE found at HIGH or CRITICAL. fix_code must be an exact corrected code snippet. Respond with valid JSON only, no markdown.
+        """).strip()
         if findings:
             prompt = (
                 f"You are a static analysis expert reviewing {LANGUAGE} code. "
                 "Analyse these SAST findings and return a JSON report.\n\n"
                 f"FINDINGS ({len(findings)} total):\n"
                 f"{json.dumps(findings[:30], indent=2)}\n\n"
-                "For findings that are specifically about HOW A SECRET/CREDENTIAL IS WIRED "
-                "(e.g. a Checkov rule on a literal `value:` instead of `valueFrom.secretKeyRef` "
-                "in a K8s manifest, a hardcoded credential default, missing CSI/ExternalSecret/"
-                "Vault-Agent annotations), also classify which rung of the secret-injection-"
-                "maturity ladder it represents and set rung/rung_label. Leave rung null for "
-                "findings unrelated to secret handling (injection, auth bypass, XSS, etc).\n"
-                "  0 = hard-coded literal in source\n"
-                "  2 = K8s/Helm manifest committed to git rendering a secret value\n"
-                "  4 = Secret env var sourced from a literal `value:` instead of "
-                "`valueFrom.secretKeyRef` or an external-secret reference\n"
-                "  5 = mounted-file pattern present but not backed by tmpfs/CSI rotation\n\n"
-                "Respond with JSON only:\n"
-                '{"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED",'
-                '"summary":"1-3 sentences on the SAST posture",'
-                '"findings":['
-                '{"tool":"","severity":"","title":"","location":"",'
-                '"cve":"","fix_version":"","impact":"","fix_description":"","fix_code":"",'
-                '"rung":null,"rung_label":""}'
-                ']}\n\n'
-                "Rules: BLOCK if injection, auth bypass, or RCE found at HIGH or CRITICAL. "
-                "fix_code must be an exact corrected code snippet. "
-                "Respond with valid JSON only, no markdown."
-            )
+            ) + SAST_RULES
             raw = call_ai(prompt)
             if raw:
                 raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
@@ -6028,7 +6019,7 @@ spec:
               key: operatorApiToken
       script: |
         #!/usr/bin/env python3
-        import json, os, re, pathlib, time, urllib.request, urllib.error, urllib.parse
+        import json, os, re, pathlib, textwrap, time, urllib.request, urllib.error, urllib.parse
         
         def _sanitize(s):
             return "".join(c for c in (s or "").strip() if c.isprintable() and c not in "\r\n\t\x00")
@@ -6186,6 +6177,14 @@ spec:
                     time.sleep(3 * (attempt + 1))
             return None
         
+        # Static rules/schema text lives in ai/prompts/sca-rules.txt --
+        # kept out of this script to stay under the repo's 250-line convention.
+        SCA_RULES = textwrap.dedent("""
+        Respond with JSON only:
+        {verdict:BLOCK|PROCEED_WITH_CAUTION|PROCEED,summary:1-3 sentences on dependency vulnerability posture,findings:[{tool:,severity:,title:,location:,cve:exact CVE ID from data or empty,fix_version:min safe version or empty,impact:,fix_description:Upgrade X from Y to Z,fix_code:}]}
+        
+        Rules: BLOCK if CRITICAL CVE with a known fix version exists. cve and fix_version must be copied exactly from the source data - never invented. fix_description: Upgrade package to fix_version. Respond with valid JSON only, no markdown.
+        """).strip()
         if findings:
             gap_note = ('COVERAGE GAP: ' + owasp_skip_reason + ' OSV-Scanner results above but OWASP NVD coverage missing.\n\n') if owasp_skip_reason else ''
             prompt = (
@@ -6193,19 +6192,7 @@ spec:
                 'FINDINGS (' + str(len(findings)) + ' CVEs/vulnerabilities, sorted by severity):\n'
                 + json.dumps(findings[:30], indent=2) + '\n\n'
                 + gap_note
-                + 'Respond with JSON only:\n'
-                '{verdict:BLOCK|PROCEED_WITH_CAUTION|PROCEED,'
-                'summary:1-3 sentences on dependency vulnerability posture,'
-                'findings:['
-                '{tool:,severity:,title:,location:,'
-                'cve:exact CVE ID from data or empty,fix_version:min safe version or empty,'
-                'impact:,fix_description:Upgrade X from Y to Z,fix_code:}'
-                ']}\n\n'
-                'Rules: BLOCK if CRITICAL CVE with a known fix version exists. '
-                'cve and fix_version must be copied exactly from the source data - never invented. '
-                'fix_description: Upgrade package to fix_version. '
-                'Respond with valid JSON only, no markdown.'
-            )
+            ) + SCA_RULES
             raw = call_ai(prompt)
             if raw:
                 raw = re.sub(r'^```(?:json)?\s*', '', raw.strip(), flags=re.MULTILINE)
@@ -6313,7 +6300,7 @@ spec:
               key: operatorApiToken
       script: |
         #!/usr/bin/env python3
-        import json, os, re, pathlib, time, urllib.request, urllib.error, urllib.parse
+        import json, os, re, pathlib, textwrap, time, urllib.request, urllib.error, urllib.parse
 
         def _sanitize(s):
             return "".join(c for c in (s or "").strip() if c.isprintable() and c not in "\r\n\t\x00")
@@ -6461,39 +6448,28 @@ spec:
                     time.sleep(3 * (attempt + 1))
             return None
 
+        # Static rules/schema text lives in ai/prompts/secrets-rules.txt --
+        # kept out of this script to stay under the repo's 250-line convention.
+        SECRETS_RULES = textwrap.dedent("""
+        For each finding, also classify which rung of the secret-injection-maturity ladder it represents, based on the file location/content:
+          0 = hard-coded literal committed to source
+          1 = build-time token replace / bundled into the built artifact (e.g. Dockerfile ARG/ENV baked at build, Node NEXT_PUBLIC_*/VITE_* inlined into a bundle, Maven/Gradle resource filtering)
+          2 = deploy-time rendered manifest that still landed in git (e.g. committed Helm output, a plain Kustomize secretGenerator result)
+          4 = runtime env var with the secret value given literally instead of via a secretKeyRef/external reference
+        A static secrets scanner only ever sees what's committed to source, so rungs 3/5/6/7 (container-start render, mounted file, SDK fetch, sidecar injection) never apply to these findings -- pick the closest of 0/1/2/4.
+        
+        Respond with JSON only:
+        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","summary":"1-3 sentences on what was found and risk","findings":[{"tool":"","severity":"CRITICAL|HIGH|MEDIUM|LOW","title":"","location":"","cve":"","fix_version":"","impact":"consequence if not fixed","fix_description":"what to do","fix_code":"","rung":0,"rung_label":"Hard-coded (committed to source)"}]}
+        
+        Rules: BLOCK if any verified secret exists. Verified secrets = CRITICAL. fix_description for secrets: rotate/revoke immediately + remove from git history. Respond with valid JSON only, no markdown.
+        """).strip()
         if findings:
             prompt = (
                 "You are a secrets-scanning expert. Review these secrets scan findings and "
                 "return a JSON analysis.\n\n"
                 f"FINDINGS ({len(findings)} total, sorted by severity):\n"
                 f"{json.dumps(findings[:30], indent=2)}\n\n"
-                "For each finding, also classify which rung of the secret-injection-maturity "
-                "ladder it represents, based on the file location/content:\n"
-                "  0 = hard-coded literal committed to source\n"
-                "  1 = build-time token replace / bundled into the built artifact (e.g. Dockerfile "
-                "ARG/ENV baked at build, Node NEXT_PUBLIC_*/VITE_* inlined into a bundle, Maven/Gradle "
-                "resource filtering)\n"
-                "  2 = deploy-time rendered manifest that still landed in git (e.g. committed Helm "
-                "output, a plain Kustomize secretGenerator result)\n"
-                "  4 = runtime env var with the secret value given literally instead of via a "
-                "secretKeyRef/external reference\n"
-                "A static secrets scanner only ever sees what's committed to source, so rungs "
-                "3/5/6/7 (container-start render, mounted file, SDK fetch, sidecar injection) never "
-                "apply to these findings -- pick the closest of 0/1/2/4.\n\n"
-                "Respond with JSON only:\n"
-                '{"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED",'
-                '"summary":"1-3 sentences on what was found and risk",'
-                '"findings":['
-                '{"tool":"","severity":"CRITICAL|HIGH|MEDIUM|LOW","title":"","location":"",'
-                '"cve":"","fix_version":"","impact":"consequence if not fixed",'
-                '"fix_description":"what to do","fix_code":"",'
-                '"rung":0,"rung_label":"Hard-coded (committed to source)"}'
-                ']}\n\n'
-                "Rules: BLOCK if any verified secret exists. "
-                "Verified secrets = CRITICAL. "
-                "fix_description for secrets: rotate/revoke immediately + remove from git history. "
-                "Respond with valid JSON only, no markdown."
-            )
+            ) + SECRETS_RULES
             raw = call_ai(prompt)
             if raw:
                 raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
@@ -6593,7 +6569,7 @@ spec:
               key: operatorApiToken
       script: |
         #!/usr/bin/env python3
-        import json, os, re, pathlib, time, urllib.request, urllib.error, urllib.parse
+        import json, os, re, pathlib, textwrap, time, urllib.request, urllib.error, urllib.parse
         import xml.etree.ElementTree as ET
 
         def _sanitize(s):
@@ -6821,6 +6797,19 @@ spec:
             f"\nTEST STAGE LOG (last 2000 chars):\n{test_log}" if test_log else ""
         )
 
+        # Static rules/schema text lives in ai/prompts/tests-rules.txt --
+        # kept out of this script to stay under the repo's 250-line convention.
+        TESTS_RULES = textwrap.dedent("""
+        Respond with JSON only:
+        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","root_cause":"test_failure|compile_error|infrastructure|unknown","tests_ran":true,"summary":"1-3 sentences explaining what happened and why","test_analysis":[{"test_name":"","failure_reason":"root cause not just symptom","fix_suggestion":""}]}
+        
+        Critical rules:
+        - If the compile log contains error messages (syntax errors, missing packages,   build failures), set root_cause='compile_error' and tests_ran=false.   Explain the compile error in the summary -- this is NOT a test failure.
+        - BLOCK if tests_ran=true and failed > 0, OR if root_cause='compile_error'.
+        - test_analysis should diagnose the real root cause, not just copy the error message.
+        - If tests passed and coverage is below threshold, set verdict=PROCEED_WITH_CAUTION.
+        - Respond with valid JSON only, no markdown.
+        """).strip()
         prompt = (
             f"You are a {LANGUAGE} test failure analysis expert.\n\n"
             f"TEST RESULTS:\n"
@@ -6831,23 +6820,7 @@ spec:
             f"TEST FAILURES:\n{json.dumps(test_summary['failures'][:20], indent=2)}\n"
             f"{compile_log_section}"
             f"{test_log_section}\n\n"
-            "Respond with JSON only:\n"
-            '{"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED",'
-            '"root_cause":"test_failure|compile_error|infrastructure|unknown",'
-            '"tests_ran":true,'
-            '"summary":"1-3 sentences explaining what happened and why",'
-            '"test_analysis":['
-            '{"test_name":"","failure_reason":"root cause not just symptom","fix_suggestion":""}'
-            ']}\n\n'
-            "Critical rules:\n"
-            "- If the compile log contains error messages (syntax errors, missing packages, "
-            "  build failures), set root_cause='compile_error' and tests_ran=false. "
-            "  Explain the compile error in the summary -- this is NOT a test failure.\n"
-            "- BLOCK if tests_ran=true and failed > 0, OR if root_cause='compile_error'.\n"
-            "- test_analysis should diagnose the real root cause, not just copy the error message.\n"
-            "- If tests passed and coverage is below threshold, set verdict=PROCEED_WITH_CAUTION.\n"
-            "- Respond with valid JSON only, no markdown."
-        )
+        ) + TESTS_RULES
 
         raw = call_ai(prompt)
         root_cause = "unknown"
@@ -6973,7 +6946,7 @@ spec:
         limits:   {cpu: "300m", memory: "256Mi"}
       script: |
         #!/usr/bin/env python3
-        import fnmatch, json, os, pathlib, re, sys, time
+        import fnmatch, json, os, pathlib, re, sys, textwrap, time
         import urllib.request, urllib.error, urllib.parse
 
         def _sanitize(s):
@@ -7137,6 +7110,11 @@ spec:
                 return None
 
             if ambiguous and AI_PROVIDER and AI_API_KEY:
+                # Static schema text lives in ai/prompts/preflight-rules.txt --
+                # kept out of this script to stay under the repo's 250-line convention.
+                PREFLIGHT_RULES = textwrap.dedent("""
+                Respond with JSON only: {"build_file":"<one candidate or null>","dockerfile_path":"<one candidate or null>","reasoning":"1-2 sentences"}
+                """).strip()
                 prompt = (
                     "You are a build-engineering assistant. A CI pipeline is about to compile and "
                     "containerize a repository but its configured build paths don't match what "
@@ -7148,10 +7126,7 @@ spec:
                     f"Candidate build manifests found: {json.dumps(manifest_candidates[:20])}\n"
                     f"Configured dockerfile-path: '{DOCKERFILE_PATH}' (exists: {exists(DOCKERFILE_PATH)})\n"
                     f"Candidate Dockerfiles found: {json.dumps(dockerfile_candidates[:20])}\n\n"
-                    "Respond with JSON only: "
-                    '{"build_file":"<one candidate or null>","dockerfile_path":"<one candidate or null>",'
-                    '"reasoning":"1-2 sentences"}'
-                )
+                ) + PREFLIGHT_RULES
                 raw = call_ai(prompt)
                 if raw:
                     raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
