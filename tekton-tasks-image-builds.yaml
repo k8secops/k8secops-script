@@ -1,0 +1,1857 @@
+# Source: platform/tekton/tasks/git/git-clone-task.yaml
+---
+# git-clone Task -- replaces the deprecated ClusterTask of the same name.
+# Tekton v0.54+ removed ClusterTask; this Task must live in tekton-pipelines.
+# API surface is kept compatible with the Tekton Hub git-clone 0.9 task so the
+# pipeline's taskRef only needs kind: Task (not ClusterTask).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: git-clone
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: clone
+spec:
+  params:
+    - name: url
+      type: string
+      description: Repository URL to clone
+    - name: revision
+      type: string
+      default: main
+      description: Branch, tag, or commit SHA to check out
+    - name: deleteExisting
+      type: string
+      default: "true"
+      description: Clean workspace before cloning
+    - name: depth
+      type: string
+      default: "1"
+      description: Shallow clone depth
+    - name: sslVerify
+      type: string
+      default: "true"
+  workspaces:
+    - name: output
+      description: The workspace where source is cloned
+    - name: git-credentials
+      optional: true
+      description: Secret workspace containing 'url' file with authenticated git URL
+  results:
+    - name: commit
+      description: The exact commit SHA that was cloned
+    - name: url
+      description: The URL of the repository
+    - name: committer-date
+      description: Date of the HEAD commit
+  steps:
+    - name: clone
+      image: k8secops/k8secops:git-v2.45.2
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        # uid 65532 has no /etc/passwd entry, so $HOME is empty and
+        # `git config --global` has nowhere writable to land.
+        - name: HOME
+          value: "/tmp"
+      script: |
+        #!/bin/sh
+        set -e
+
+        # Every later pipeline task (ai-preflight, scanners, compile, etc.)
+        # mounts this same workspace as a DIFFERENT UID -- clone is hardcoded
+        # to 65532, compile is mostly 1000. Without this, a later step
+        # creating a NEW directory under one clone created (e.g. python's
+        # `./vendor` when build-context is a subdirectory, not ".") fails
+        # with EACCES, since clone's default umask leaves new directories at
+        # 0755 (writable only by their creating UID). A permissive umask here
+        # makes everything clone creates writable by any later UID. fsGroup
+        # on the PipelineRun's podTemplate (run_trigger.py) is the "real" fix
+        # for clusters with a CSI driver that supports it (EBS/PD/Azure
+        # Disk) -- it's a no-op on Kind's hostPath-backed local-path
+        # provisioner, which is why this umask is also needed for local dev.
+        umask 0000
+
+        if [ "$(params.deleteExisting)" = "true" ]; then
+          find $(workspaces.output.path) -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+        fi
+
+        # the workspace PVC directory is not owned by uid 65532, so git's
+        # dubious-ownership check refuses to operate on it unless allow-listed.
+        git config --global --add safe.directory "$(workspaces.output.path)"
+
+        if [ "$(params.sslVerify)" = "false" ]; then
+          git config --global http.sslVerify false
+        fi
+
+        git config --global init.defaultBranch main
+
+        # Use the authenticated URL from the run-scoped credentials Secret when
+        # present -- keeps the token out of PipelineRun params and TaskRun specs.
+        # Fall back to the plain URL param for backward compatibility.
+        CRED_FILE="$(workspaces.git-credentials.path)/url"
+        if [ -f "$CRED_FILE" ]; then
+          CLONE_URL=$(cat "$CRED_FILE")
+        else
+          CLONE_URL="$(params.url)"
+        fi
+
+        # Try shallow clone of the specific revision first; fall back to
+        # cloning default branch then checking out the revision (needed for tags
+        # and SHAs that aren't directly fetchable as branches).
+        git clone --depth "$(params.depth)" --branch "$(params.revision)" \
+          "$CLONE_URL" "$(workspaces.output.path)" 2>/dev/null \
+        || ( git clone --depth "$(params.depth)" "$CLONE_URL" \
+               "$(workspaces.output.path)" \
+             && git -C "$(workspaces.output.path)" fetch --depth "$(params.depth)" \
+               origin "$(params.revision)" \
+             && git -C "$(workspaces.output.path)" checkout FETCH_HEAD )
+
+        cd "$(workspaces.output.path)"
+        RESULT_SHA="$(git rev-parse HEAD)"
+        RESULT_DATE="$(git log -1 --date=iso-strict --format=%cd)"
+
+        printf '%s' "$RESULT_SHA"   > "$(results.commit.path)"
+        printf '%s' "$(params.url)" > "$(results.url.path)"
+        printf '%s' "$RESULT_DATE"  > "$(results.committer-date.path)"
+
+        echo "Cloned $(params.url) @ $(params.revision) -> $RESULT_SHA"
+
+# Source: platform/tekton/tasks/build/build-image-candidate-task.yaml
+---
+# "" Build Image Candidate (isolated build namespace) ""''""
+# Opt-in, see values.yaml imageBuildIsolation. Lives in the isolated
+# gitops-image-builds namespace, NOT tekton-pipelines -- this is the only
+# task in that namespace that needs runAsUser:0 (Kaniko's overlayfs layer
+# extraction). Unlike gitops-build-image-local (--no-push, scan-before-push),
+# this task PUSHES directly to a "-candidate" tag -- the human gate promotes
+# it to the real tag after approval (see gitops-image-promote). It also
+# saves a local tar (--tar-path) so an optional clamav scan in THIS
+# namespace can still run against the exact bytes just built.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-build-image-candidate
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: build
+spec:
+  description: |
+    Builds container image using Kaniko and pushes it to a "-candidate" tag.
+    Also saves a local tar for the optional in-namespace clamav scan.
+  params:
+    - name: image-registry
+      type: string
+    - name: image-name
+      type: string
+    - name: candidate-image-tag
+      type: string
+    - name: language
+      type: string
+    - name: build-tool
+      default: "maven"
+    - name: build-version
+      default: "21"
+    - name: build-file
+      default: "pom.xml"
+    - name: dockerfile-path
+      default: "./Dockerfile"
+    - name: context
+      default: "./"
+    - name: registry-mirror
+      default: ""
+      description: "Optional registry mirror URL for Kaniko base image pulls."
+    - name: operator-api-url
+      default: "http://gitops-operator.gitops-core.svc.cluster.local:8080"
+    - name: pipeline-run-id
+      default: ""
+  workspaces:
+    - name: source
+    - name: image-tar
+    - name: kaniko-cache
+    - name: registry-credentials
+      description: "Docker config.json for authenticating base image pulls and the candidate push"
+  results:
+    - name: CANDIDATE_IMAGE_REF
+    - name: CANDIDATE_IMAGE_DIGEST
+  steps:
+    - name: build-and-push
+      image: k8secops/k8secops:gitops-builder-1.0.0
+      securityContext:
+        runAsUser: 0
+        allowPrivilegeEscalation: false
+      computeResources:
+        requests: {cpu: "500m", memory: "1Gi"}
+        limits:   {cpu: "2000m", memory: "4Gi"}
+      env:
+        - name: DOCKER_CONFIG
+          value: $(workspaces.registry-credentials.path)
+      script: |
+        #!/bin/sh
+        set -e
+
+        DF="$(params.dockerfile-path)"
+        DF="${DF#./}"
+        CTX="$(params.context)"
+        CTX="${CTX#./}"
+
+        # Normalise Docker Hub registry the same way gitops-image-push does --
+        # Kaniko's --no-push mode (gitops-build-image-local) has never needed
+        # this because it never actually pushes; this task does.
+        REGISTRY="$(params.image-registry)"
+        case "$REGISTRY" in
+          *hub.docker.com*|*docker.io*|*registry-1.docker.io*) REGISTRY="index.docker.io" ;;
+        esac
+        DESTINATION="$REGISTRY/$(params.image-name):$(params.candidate-image-tag)"
+
+        echo "Building candidate image: $DESTINATION"
+        echo "Dockerfile:  $(workspaces.source.path)/$DF"
+        echo "Context:     $(workspaces.source.path)/$CTX"
+
+        MIRROR_FLAG=""
+        if [ -n "$(params.registry-mirror)" ]; then
+          MIRROR_FLAG="--registry-mirror=$(params.registry-mirror)"
+          echo "Using registry mirror: $(params.registry-mirror)"
+        fi
+
+        # shellcheck disable=SC2086
+        /kaniko/executor \
+          --dockerfile="$(workspaces.source.path)/$DF" \
+          --context="dir://$(workspaces.source.path)/$CTX" \
+          --destination="$DESTINATION" \
+          --tar-path="$(workspaces.image-tar.path)/image.tar" \
+          --digest-file="/tmp/digest" \
+          --snapshot-mode=full \
+          --cache-dir="$(workspaces.kaniko-cache.path)" \
+          --cache-ttl=168h \
+          --log-format=text \
+          --verbosity=info \
+          $MIRROR_FLAG
+
+        DIGEST=$(cat /tmp/digest 2>/dev/null || echo "unknown")
+        printf '%s' "$DESTINATION" > "$(results.CANDIDATE_IMAGE_REF.path)"
+        printf '%s' "$DIGEST"      > "$(results.CANDIDATE_IMAGE_DIGEST.path)"
+        echo "Pushed candidate: $DESTINATION@$DIGEST"
+
+    - name: notify-built
+      # Reports the candidate ref/digest to the operator inline, the moment
+      # this task succeeds -- deliberately NOT deferred to the pipeline's
+      # finally task (gitops-notify-build-status), which only ever carries
+      # pipeline-level values. See that task's comment for why: a finally
+      # task that references THIS task's results would be silently skipped
+      # whenever an upstream task (clone/compile/pre-build) fails instead.
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: OPERATOR_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gitops-operator-token
+              key: operatorApiToken
+      script: |
+        #!/usr/bin/env python3
+        import urllib.request, json, os
+
+        ref    = open("$(results.CANDIDATE_IMAGE_REF.path)").read()
+        digest = open("$(results.CANDIDATE_IMAGE_DIGEST.path)").read()
+        token  = os.environ.get("OPERATOR_API_TOKEN", "")
+
+        payload = json.dumps({
+            "candidateImageRef":    ref,
+            "candidateImageDigest": digest,
+        }).encode()
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            req = urllib.request.Request(
+                "$(params.operator-api-url)/api/v1/pipelines/$(params.pipeline-run-id)/candidate-built",
+                data=payload, headers=headers, method="POST")
+            urllib.request.urlopen(req, timeout=10)
+            print(f"Notified operator: candidate built {ref}")
+        except Exception as e:
+            print(f"Operator notify failed (non-fatal): {e}")
+
+# Source: platform/tekton/tasks/build/compile-dotnet-task.yaml
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-compile-dotnet
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: compile
+spec:
+  description: >
+    .NET compile -- dotnet restore + build + publish.
+    The SDK image version is determined by the HIGHER of (configured version) or
+    (TargetFramework found in the .csproj), so a net8.0 project always gets the
+    .NET 8 SDK even if the user configured 6.0. Fails fast with a clear message
+    on version mismatch so developers know to update their app configuration.
+  params:
+    - name: build-tool
+      default: "dotnet"
+    - name: build-version
+      default: "8.0"
+    - name: build-file
+      default: ""
+    - name: build-context
+      default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
+  workspaces:
+    - name: source
+    - name: extra-build-creds
+      optional: true
+      description: "Consolidated Secret of {name}-username/{name}-token keys for this app's declared build-artifact-repo credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
+  steps:
+    # Generic, identical script for every .NET app -- writes a
+    # packageSourceCredentials block (NuGet's own documented convention) into
+    # $HOME/.nuget/NuGet/NuGet.Config, keyed by the SAME source name the
+    # customer's own committed NuGet.config/.csproj already declares under
+    # matchId -- this step never invents a new package source, only supplies
+    # credentials for one the customer's repo already references. No-op when
+    # extra-creds-manifest is "[]" (every app that hasn't configured one).
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.dotnet-home"
+      script: |
+        #!/usr/bin/env python3
+        import json, os, pathlib
+
+        manifest = json.loads('''$(params.extra-creds-manifest)''')
+        creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        if not manifest:
+            print("No extra build-artifact-repo credentials declared -- skipping")
+        else:
+            nuget_dir = home / ".nuget" / "NuGet"
+            nuget_dir.mkdir(parents=True, exist_ok=True)
+            blocks = []
+            for cred in manifest:
+                name = cred["name"]
+                user = (creds_dir / f"{name}-username").read_text().strip()
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                blocks.append(
+                    f"    <{cred['matchId']}>\n"
+                    f"      <add key=\"Username\" value=\"{user}\" />\n"
+                    f"      <add key=\"ClearTextPassword\" value=\"{token}\" />\n"
+                    f"    </{cred['matchId']}>")
+            (nuget_dir / "NuGet.Config").write_text(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<configuration>\n"
+                "  <packageSourceCredentials>\n" + "\n".join(blocks) +
+                "\n  </packageSourceCredentials>\n</configuration>\n")
+            print(f"Wrote {len(manifest)} NuGet source credential(s) to {nuget_dir}/NuGet.Config")
+
+        # Generic, identical for every language: export this app's declared
+        # external-service credentials (DB/Redis/Kafka/curl-scp-wget targets
+        # etc.) as a sourceable env file the compile step reads before
+        # invoking the build tool. No-op when the workspace isn't bound or no
+        # external-service credentials declared.
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time instead of embedding the value as
+        # literal text into the generated export line -- the value never
+        # passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-character content
+        # (quotes, $(...), newlines) can never break or inject into the line.
+        svc_lines: list[str] = []
+        # NOTE: each $(workspaces.<name>.path) must appear literally here --
+        # Tekton substitutes these as plain text before the script runs, so
+        # it cannot resolve one built from a Python loop variable.
+        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
+                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+
+    # "" Version detection """""""""""""""""""""""""""""""""""""""""""""""""""""
+    # Read TargetFramework(s) from the csproj and write the required SDK major
+    # version to a shared file. This runs in a minimal python image that is
+    # available in all Kind clusters.
+    - name: detect-version
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)/$(params.build-context)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/usr/bin/env python3
+        import os, re, glob, sys
+
+        configured = "$(params.build-version)"
+        build_file  = "$(params.build-file)".strip()
+
+        # Find the .csproj to inspect
+        if build_file:
+            candidates = [build_file]
+        else:
+            candidates = glob.glob("**/*.csproj", recursive=True)
+            candidates = [c for c in candidates if "test" not in c.lower()]
+
+        if not candidates:
+            print(f"No .csproj found -- using configured version {configured}")
+            open("/workspace/sdk-version.txt", "w").write(configured)
+            sys.exit(0)
+
+        csproj = candidates[0]
+        print(f"Inspecting: {csproj}")
+        content = open(csproj).read()
+
+        # Extract TargetFramework(s) -- handles net6.0, net8.0, netstandard2.0, etc.
+        targets = re.findall(r"<TargetFrameworks?>\s*([^<]+)\s*</TargetFrameworks?>", content)
+        if not targets:
+            print(f"No TargetFramework found in {csproj} -- using {configured}")
+            open("/workspace/sdk-version.txt", "w").write(configured)
+            sys.exit(0)
+
+        # Parse the highest .NET version required (ignore netstandard)
+        versions = []
+        for target_list in targets:
+            for t in re.split(r'[;,\s]+', target_list.strip()):
+                m = re.match(r'net(\d+)\.(\d+)$', t.strip())
+                if m:
+                    versions.append((int(m.group(1)), int(m.group(2)), t))
+
+        if not versions:
+            print(f"Only netstandard targets found -- using {configured}")
+            open("/workspace/sdk-version.txt", "w").write(configured)
+            sys.exit(0)
+
+        # Use the highest required version (at least as high as configured)
+        versions.sort(reverse=True)
+        required_major, required_minor, required_label = versions[0]
+        required_str = f"{required_major}.{required_minor}"
+
+        cfg_parts = configured.split(".")
+        cfg_major  = int(cfg_parts[0]) if cfg_parts else 6
+        cfg_minor  = int(cfg_parts[1]) if len(cfg_parts) > 1 else 0
+
+        if required_major > cfg_major or (required_major == cfg_major and required_minor > cfg_minor):
+            print(f"WARNING: csproj targets {required_label} but app was configured for .NET {configured}.")
+            print(f"  Using .NET {required_str} SDK automatically.")
+            print(f"  ACTION: Edit your app in the platform UI and set .NET version to {required_str}.")
+            sdk = required_str
+        else:
+            sdk = configured
+
+        print(f"SDK version resolved: {sdk}")
+        open("/workspace/sdk-version.txt", "w").write(sdk)
+
+    # "" Compile """""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+    # SDK 9.0 is backward compatible: builds net6.0, net7.0, net8.0, net9.0.
+    # Using the latest SDK avoids NETSDK1045 errors when the csproj targets a
+    # version higher than the user-configured version (a common misconfiguration).
+    - name: compile
+      image: k8secops/k8secops:dotnet-sdk-9.0
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)/$(params.build-context)
+      # Run as the same user as git-clone (65532) so it owns the workspace files
+      # and can create obj/ bin/ publish/ without capability tricks.
+      securityContext:
+        runAsUser: 65532
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        # 65532 has no home in /etc/passwd -- redirect all .NET/NuGet cache to workspace
+        - name: HOME
+          value: "$(workspaces.source.path)/.dotnet-home"
+        - name: DOTNET_CLI_HOME
+          value: "$(workspaces.source.path)/.dotnet-home"
+        - name: NUGET_PACKAGES
+          value: "$(workspaces.source.path)/.nuget/packages"
+        - name: DOTNET_NOLOGO
+          value: "1"
+      computeResources:
+        requests: {cpu: "500m", memory: "1Gi"}
+        limits:   {cpu: "2000m", memory: "3Gi"}
+      script: |
+        #!/bin/bash
+        set -e
+        BUILD_FILE="$(params.build-file)"
+
+        echo """ .NET compile: SDK=$(params.build-version) """
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+        dotnet --version
+
+        # Produces the final, deployable publish output here, in the compile
+        # Task, rather than relying on the Dockerfile's own `dotnet publish`
+        # inside Kaniko. Two reasons this changed from validate-only:
+        #  1. Credentials for private NuGet feeds (extra build-artifact-repo
+        #     credentials) are only available here, not inside Kaniko's
+        #     separate, differently-privileged build step.
+        #  2. The platform now requires every language's Dockerfile to COPY a
+        #     pre-built artifact rather than re-run the build tool inside
+        #     Kaniko (see verify-artifacts) -- consistent with how Java/Maven
+        #     already worked. Publishing to a workspace-relative path (not an
+        #     external /out) avoids the permission issue previously hit,
+        #     because this step already runs as the same non-root uid (65532)
+        #     that owns the whole workspace.
+        OUT_DIR="$(workspaces.source.path)/$(params.build-context)/publish-output"
+        if [ -n "$BUILD_FILE" ]; then
+          echo """ dotnet restore: $BUILD_FILE """
+          dotnet restore "$BUILD_FILE"
+          echo """ dotnet build: $BUILD_FILE """
+          dotnet build "$BUILD_FILE" -c Release --no-restore
+          echo """ dotnet publish: $BUILD_FILE -> $OUT_DIR """
+          dotnet publish "$BUILD_FILE" -c Release --no-build -o "$OUT_DIR"
+        else
+          echo """ dotnet restore """
+          dotnet restore
+          echo """ dotnet build """
+          dotnet build -c Release --no-restore
+          echo """ dotnet publish -> $OUT_DIR """
+          dotnet publish -c Release --no-build -o "$OUT_DIR"
+        fi
+
+        echo """ Build artifacts """
+        find "$OUT_DIR" -maxdepth 1 -type f 2>/dev/null \
+          | while read f; do echo "  $(du -sh "$f" | cut -f1)  $f"; done
+        echo """ .NET compile complete """
+
+# Source: platform/tekton/tasks/build/compile-go-task.yaml
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-compile-go
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: compile
+spec:
+  description: "Go compile -- go build ./... Validates compilation before image build."
+  params:
+    - name: build-tool
+      default: "go"
+    - name: build-version
+      default: "1.22"
+    - name: build-file
+      default: "go.mod"
+    - name: build-context
+      default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
+    - name: goprivate
+      default: ""
+      description: "Comma-joined module-path prefixes for GOPRIVATE -- non-sensitive hostnames, baked in per-app by pipeline_builder.py. Empty for apps with no private Go module credential."
+  workspaces:
+    - name: source
+    - name: go-cache
+      optional: true
+      description: "Persistent Go module cache (GOPATH/pkg/mod). Shared across runs."
+    - name: extra-build-creds
+      optional: true
+      description: "Consolidated Secret of {name}-username/{name}-token keys for this app's declared build-artifact-repo credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
+  steps:
+    # Generic, identical script for every Go app -- writes .netrc into $HOME
+    # (Go's own standard mechanism for authenticating `go get`/`go mod
+    # download` against private module hosts). No-op when extra-creds-manifest
+    # is "[]" (every app that hasn't configured an extra credential).
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/usr/bin/env python3
+        import json, os, pathlib, stat
+
+        manifest = json.loads('''$(params.extra-creds-manifest)''')
+        creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        if not manifest:
+            print("No extra build-artifact-repo credentials declared -- skipping")
+        else:
+            lines = []
+            for cred in manifest:
+                name, host = cred["name"], cred["matchId"]
+                user = (creds_dir / f"{name}-username").read_text().strip()
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                lines.append(f"machine {host}\nlogin {user}\npassword {token}")
+            netrc = home / ".netrc"
+            netrc.write_text("\n".join(lines) + "\n")
+            netrc.chmod(stat.S_IRUSR | stat.S_IWUSR)   # go requires .netrc to not be world/group readable
+            print(f"Wrote {len(manifest)} Go module host credential(s) to {netrc}")
+
+        # Generic, identical for every language: export this app's declared
+        # external-service credentials (DB/Redis/Kafka/curl-scp-wget targets
+        # etc.) as a sourceable env file the compile step reads before
+        # invoking the build tool. No-op when the workspace isn't bound or no
+        # external-service credentials declared.
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time instead of embedding the value as
+        # literal text into the generated export line -- the value never
+        # passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-character content
+        # (quotes, $(...), newlines) can never break or inject into the line.
+        svc_lines: list[str] = []
+        # NOTE: each $(workspaces.<name>.path) must appear literally here --
+        # Tekton substitutes these as plain text before the script runs, so
+        # it cannot resolve one built from a Python loop variable.
+        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
+                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+
+    - name: compile
+      image: k8secops/k8secops:golang-$(params.build-version)-alpine
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)/$(params.build-context)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "500m", memory: "512Mi"}
+        limits:   {cpu: "2000m", memory: "2Gi"}
+      env:
+        # uid 1000 has no /etc/passwd entry. The golang image sets GOPATH=/go
+        # which is root-owned -- go mod download fails writing to /go/pkg/mod.
+        # Override GOPATH and GOCACHE to the source workspace (writable by uid 1000).
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+        - name: GOPATH
+          value: "$(workspaces.source.path)/.gopath"
+        - name: GOCACHE
+          value: "$(workspaces.source.path)/.gopath/cache"
+        - name: GOMODCACHE
+          value: "$(workspaces.source.path)/.gopath/pkg/mod"
+        - name: GOPRIVATE
+          value: "$(params.goprivate)"
+      script: |
+        #!/bin/sh
+        set -e
+        echo """ Go compile: version=$(params.build-version) """
+
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
+        mkdir -p "$GOPATH/pkg/mod" "$GOCACHE"
+
+        go mod download
+        go build ./...
+        # Final, copyable artifact for verify-artifacts / the Dockerfile's
+        # COPY step -- `-o dir/` builds every main package found under ./...
+        # into that directory, robust whether the repo has one main at the
+        # root or several under cmd/*, no assumption about layout needed.
+        mkdir -p ./bin
+        go build -o ./bin/ ./...
+        echo """ Go compile complete -- binaries: """
+        ls -la ./bin/
+
+# Source: platform/tekton/tasks/build/compile-java-task.yaml
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-compile-java
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: compile
+spec:
+  description: "Java compile -- Maven or Gradle (wrapper-aware). Produces JARs/WARs for image build and tests."
+  params:
+    - name: build-tool
+      default: "maven"
+    - name: build-version
+      default: "21"
+    - name: build-file
+      default: "pom.xml"
+    - name: build-context
+      default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
+  workspaces:
+    - name: source
+    - name: maven-cache
+      optional: true
+      description: "Persistent Maven local repository cache (~/.m2). Shared across runs to avoid re-downloading dependencies."
+    - name: extra-build-creds
+      optional: true
+      description: "Consolidated Secret of {name}-username/{name}-token keys for this app's declared build-artifact-repo credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
+  steps:
+    # Generic, identical script for every Java app -- only extra-creds-manifest
+    # and the mounted Secret's contents vary per app/run. No-op (does nothing)
+    # when extra-creds-manifest is "[]" or the workspace isn't bound, so this
+    # step is a harmless no-op for every app that hasn't configured an extra
+    # build-artifact-repo credential.
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/usr/bin/env python3
+        import json, os, pathlib
+
+        manifest = json.loads('''$(params.extra-creds-manifest)''')
+        creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
+        build_tool = "$(params.build-tool)"
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        if not manifest:
+            print("No extra build-artifact-repo credentials declared -- skipping")
+        elif build_tool == "maven":
+            m2 = home / ".m2"
+            m2.mkdir(parents=True, exist_ok=True)
+            servers = []
+            for cred in manifest:
+                name = cred["name"]
+                user = (creds_dir / f"{name}-username").read_text().strip()
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                servers.append(
+                    f"    <server>\n      <id>{cred['matchId']}</id>\n"
+                    f"      <username>{user}</username>\n      <password>{token}</password>\n"
+                    f"    </server>")
+            (m2 / "settings.xml").write_text(
+                "<settings>\n  <servers>\n" + "\n".join(servers) + "\n  </servers>\n</settings>\n")
+            print(f"Wrote {len(manifest)} Maven <server> credential(s) to {m2}/settings.xml")
+        elif build_tool == "gradle":
+            # Gradle's own documented convention: ORG_GRADLE_PROJECT_xxx env
+            # vars become project property `xxx` automatically. The customer's
+            # build.gradle already references project.findProperty('<matchId>Username'/'Password')
+            # for this to work -- standard Gradle credential pattern, no platform-invented convention.
+            env_file = home / ".gradle-extra-creds.env"
+            lines = []
+            for cred in manifest:
+                name = cred["name"]
+                user = (creds_dir / f"{name}-username").read_text().strip()
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                lines.append(f"export ORG_GRADLE_PROJECT_{cred['matchId']}Username='{user}'")
+                lines.append(f"export ORG_GRADLE_PROJECT_{cred['matchId']}Password='{token}'")
+            env_file.write_text("\n".join(lines) + "\n")
+            print(f"Wrote {len(manifest)} Gradle credential env-export(s) to {env_file}")
+        else:
+            print(f"build-tool={build_tool}: extra build-artifact-repo credentials not applicable -- skipping")
+
+        # Generic, identical for every language: export this app's declared
+        # external-service credentials (DB/Redis/Kafka/curl-scp-wget targets
+        # etc.) as a sourceable env file the compile step reads before
+        # invoking the build tool -- same consolidated-Secret-as-files
+        # mechanism as extra-build-creds above, just exported as literal env
+        # vars instead of a tool-specific config file. No-op when the
+        # workspace isn't bound or no external-service credentials declared.
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time instead of embedding the value as
+        # literal text into the generated export line -- the value never
+        # passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-character content
+        # (quotes, $(...), newlines) can never break or inject into the line.
+        svc_lines: list[str] = []
+        # NOTE: each $(workspaces.<name>.path) must appear literally here --
+        # Tekton substitutes these as plain text before the script runs, so
+        # it cannot resolve one built from a Python loop variable.
+        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
+                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+
+    - name: compile
+      image: k8secops/k8secops:maven-3.9-eclipse-temurin-$(params.build-version)
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)/$(params.build-context)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "500m", memory: "1Gi"}
+        limits:   {cpu: "2000m", memory: "3Gi"}
+      env:
+        # uid 1000 has no /etc/passwd entry -- Maven writes local repo to
+        # $HOME/.m2/repository and Gradle writes cache to $HOME/.gradle.
+        # Redirect both into the source workspace (writable by uid 1000).
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+        - name: GRADLE_USER_HOME
+          value: "$(workspaces.source.path)/.gradle"
+      script: |
+        #!/bin/bash
+        set -e
+        BUILD_TOOL="$(params.build-tool)"
+        BUILD_FILE="$(params.build-file)"
+        echo """ Java compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
+
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
+        mkdir -p "$HOME/.m2" "$GRADLE_USER_HOME"
+
+        # Use persistent cache PVC if mounted, otherwise fall back to source workspace
+        if [ "$(workspaces.maven-cache.bound)" = "true" ]; then
+          MVN_REPO="$(workspaces.maven-cache.path)/repository"
+          mkdir -p "$MVN_REPO"
+        else
+          MVN_REPO="$(workspaces.source.path)/.m2/repository"
+        fi
+        MVN_FLAGS="-Dmaven.repo.local=$MVN_REPO -DskipTests -B"
+
+        case "$BUILD_TOOL" in
+          maven)
+            EXTRA=""
+            [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "pom.xml" ] && EXTRA="-f $BUILD_FILE"
+            # Prefer Maven Wrapper if the project ships one
+            MVN="mvn"
+            [ -x "./mvnw" ] && MVN="./mvnw" && echo "  (using Maven Wrapper)"
+            $MVN package $MVN_FLAGS $EXTRA
+            echo """ Artifacts """
+            find . -name "*.jar" -o -name "*.war" -o -name "*.ear" 2>/dev/null \
+              | grep -v "\.m2\|test-classes\|/original-" | sort \
+              | while read f; do echo "  $(du -sh "$f" | cut -f1)  $f"; done
+            ;;
+          gradle)
+            # Extra build-artifact-repo credentials (if declared) -- written by
+            # the materialize-build-creds step above; no-op if absent.
+            [ -f "$HOME/.gradle-extra-creds.env" ] && . "$HOME/.gradle-extra-creds.env"
+            EXTRA=""
+            [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "build.gradle" ] && EXTRA="-b $BUILD_FILE"
+            # Prefer Gradle Wrapper if the project ships one
+            GRADLE="gradle"
+            [ -x "./gradlew" ] && GRADLE="./gradlew" && echo "  (using Gradle Wrapper)"
+            $GRADLE assemble $EXTRA
+            find . -name "*.jar" -o -name "*.war" 2>/dev/null \
+              | grep -v "/test" | sort \
+              | while read f; do echo "  $(du -sh "$f" | cut -f1)  $f"; done
+            ;;
+          *)
+            echo "Unknown Java build-tool=$BUILD_TOOL"; exit 1 ;;
+        esac
+        echo """ Java compile complete """
+
+# Source: platform/tekton/tasks/build/compile-nodejs-task.yaml
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-compile-nodejs
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: compile
+spec:
+  description: "Node.js compile -- install deps + npm run build (if build script exists)."
+  params:
+    - name: build-tool
+      default: "npm"
+    - name: build-version
+      default: "20"
+    - name: build-file
+      default: "package.json"
+    - name: build-context
+      default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
+  workspaces:
+    - name: source
+    - name: npm-cache
+      optional: true
+      description: "Persistent npm cache (~/.npm). Shared across runs to avoid re-downloading packages."
+    - name: extra-build-creds
+      optional: true
+      description: "Consolidated Secret of {name}-username/{name}-token keys for this app's declared build-artifact-repo credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
+  steps:
+    # Generic, identical script for every Node.js app -- writes .npmrc into
+    # $HOME (npm's own standard discovery location), which the compile step
+    # below reads via its own HOME=$(workspaces.source.path)/.compile-home.
+    # No-op when extra-creds-manifest is "[]" (every app that hasn't
+    # configured an extra credential).
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/usr/bin/env python3
+        import json, os, pathlib
+
+        manifest = json.loads('''$(params.extra-creds-manifest)''')
+        creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        if not manifest:
+            print("No extra build-artifact-repo credentials declared -- skipping")
+        else:
+            lines = []
+            for cred in manifest:
+                name, host = cred["name"], cred["matchId"]
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                # npm's standard documented convention: a per-registry auth token
+                # line in .npmrc. Project-relative .npmrc also works (npm checks
+                # cwd before $HOME), but $HOME is sufficient here since the
+                # compile step's cwd and $HOME are both under the same workspace.
+                lines.append(f"//{host}/:_authToken={token}")
+            (home / ".npmrc").write_text("\n".join(lines) + "\n")
+            print(f"Wrote {len(manifest)} npm registry credential(s) to {home}/.npmrc")
+
+        # Generic, identical for every language: export this app's declared
+        # external-service credentials (DB/Redis/Kafka/curl-scp-wget targets
+        # etc.) as a sourceable env file the compile step reads before
+        # invoking the build tool. No-op when the workspace isn't bound or no
+        # external-service credentials declared.
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time instead of embedding the value as
+        # literal text into the generated export line -- the value never
+        # passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-character content
+        # (quotes, $(...), newlines) can never break or inject into the line.
+        svc_lines: list[str] = []
+        # NOTE: each $(workspaces.<name>.path) must appear literally here --
+        # Tekton substitutes these as plain text before the script runs, so
+        # it cannot resolve one built from a Python loop variable.
+        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
+                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+
+    - name: compile
+      image: k8secops/k8secops:node-$(params.build-version)-alpine
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)/$(params.build-context)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "500m", memory: "512Mi"}
+        limits:   {cpu: "2000m", memory: "2Gi"}
+      env:
+        # uid 1000 has no /etc/passwd entry so $HOME is empty -- npm, yarn,
+        # and corepack all write cache/config to $HOME and fail without it.
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/bin/sh
+        set -e
+        BUILD_TOOL="$(params.build-tool)"
+        echo """ Node.js compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
+
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
+        mkdir -p "$HOME"
+
+        # Use npm-cache PVC when bound, otherwise fall back to source workspace
+        if [ "$(workspaces.npm-cache.bound)" = "true" ]; then
+          export npm_config_cache="$(workspaces.npm-cache.path)/.npm"
+        else
+          export npm_config_cache="$HOME/.npm"
+        fi
+        mkdir -p "$npm_config_cache"
+
+        case "$BUILD_TOOL" in
+          npm)
+            npm install --silent
+            npm run build --if-present
+            ;;
+          yarn)
+            yarn install --frozen-lockfile --silent
+            yarn build 2>/dev/null || true
+            ;;
+          pnpm)
+            corepack enable && pnpm install --frozen-lockfile --silent
+            pnpm run build --if-present 2>/dev/null || true
+            ;;
+          *)
+            npm install --silent
+            npm run build --if-present
+            ;;
+        esac
+        echo """ Node.js compile complete """
+
+# Source: platform/tekton/tasks/build/compile-python-task.yaml
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-compile-python
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: compile
+spec:
+  description: >
+    Python compile -- install dependencies into a copyable ./vendor
+    virtualenv and validate syntax (py_compile). Python is interpreted, so
+    "the artifact" is the populated virtualenv itself, which the Dockerfile
+    COPYs in rather than re-running the install (see verify-artifacts).
+  params:
+    - name: build-tool
+      default: "pip"
+    - name: build-version
+      default: "3.12"
+    - name: build-file
+      default: "requirements.txt"
+    - name: build-context
+      default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
+  workspaces:
+    - name: source
+    - name: extra-build-creds
+      optional: true
+      description: "Consolidated Secret of {name}-username/{name}-token keys for this app's declared build-artifact-repo credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
+  steps:
+    # Generic, identical script for every Python app -- writes PIP_EXTRA_INDEX_URL
+    # exports (pip's own documented convention for a private package index)
+    # to a file the compile step sources. No-op when extra-creds-manifest is
+    # "[]" (every app that hasn't configured an extra credential).
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/usr/bin/env python3
+        import json, os, pathlib
+
+        manifest = json.loads('''$(params.extra-creds-manifest)''')
+        creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        if not manifest:
+            print("No extra build-artifact-repo credentials declared -- skipping")
+        else:
+            urls = []
+            for cred in manifest:
+                name, host = cred["name"], cred["matchId"]
+                user = (creds_dir / f"{name}-username").read_text().strip()
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                urls.append(f"https://{user}:{token}@{host}/simple/")
+            env_file = home / ".pip-extra-creds.env"
+            env_file.write_text(f"export PIP_EXTRA_INDEX_URL='{' '.join(urls)}'\n")
+            print(f"Wrote {len(manifest)} pip private-index credential(s) to {env_file}")
+
+        # Generic, identical for every language: export this app's declared
+        # external-service credentials (DB/Redis/Kafka/curl-scp-wget targets
+        # etc.) as a sourceable env file the compile step reads before
+        # invoking the build tool. No-op when the workspace isn't bound or no
+        # external-service credentials declared.
+        # FILE__-prefixed keys (secret-manager deliveryMode=file -- SSH keys,
+        # CA certs, kubeconfigs etc.) point {name}_FILE straight at the
+        # already-mounted Secret file -- no copy needed, it's a stable path
+        # for the pod's lifetime. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time instead of embedding the value as
+        # literal text into the generated export line -- the value never
+        # passes through shell quoting/escaping this way (only the
+        # platform-controlled file path does), so multi-character content
+        # (quotes, $(...), newlines) can never break or inject into the line.
+        svc_lines: list[str] = []
+        # NOTE: each $(workspaces.<name>.path) must appear literally here --
+        # Tekton substitutes these as plain text before the script runs, so
+        # it cannot resolve one built from a Python loop variable.
+        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
+                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+
+    - name: compile
+      image: k8secops/k8secops:python-$(params.build-version)-slim
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)/$(params.build-context)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "200m", memory: "256Mi"}
+        limits:   {cpu: "1000m", memory: "1Gi"}
+      env:
+        # uid 1000 has no /etc/passwd entry, so $HOME is empty -- point it at
+        # the source workspace for pip's own cache/config discovery.
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/bin/sh
+        set -e
+        BUILD_TOOL="$(params.build-tool)"
+        BUILD_FILE="$(params.build-file)"
+        echo """ Python compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
+
+        mkdir -p "$HOME"
+        [ -f "$HOME/.pip-extra-creds.env" ] && . "$HOME/.pip-extra-creds.env"
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
+        # Always upgrade pip first -- avoids version notice noise and ensures
+        # consistent behaviour across base images that ship older pip versions
+        pip install --upgrade pip --quiet --user --break-system-packages 2>/dev/null || true
+
+        # Final, copyable artifact: a real virtualenv at ./vendor, populated
+        # by whichever tool the app uses. The Dockerfile COPYs this directory
+        # in and puts its bin/ on PATH -- console-script entry points
+        # (uvicorn, gunicorn, flask, etc.) keep working, unlike a bare
+        # PYTHONPATH-only package dump.
+        python -m venv ./vendor
+        . ./vendor/bin/activate
+
+        if [ -f "$BUILD_FILE" ] && [ "$BUILD_TOOL" = "pip" ]; then
+          pip install -r "$BUILD_FILE" --quiet
+        elif [ "$BUILD_TOOL" = "poetry" ]; then
+          pip install poetry --quiet
+          poetry install --no-interaction --quiet
+        elif [ "$BUILD_TOOL" = "pdm" ]; then
+          pip install pdm --quiet
+          pdm install --no-self 2>/dev/null || pdm install
+        elif [ "$BUILD_TOOL" = "pipenv" ]; then
+          pip install pipenv --quiet
+          PIPENV_VENV_IN_PROJECT=0 pipenv install --deploy --quiet
+        elif [ "$BUILD_TOOL" = "uv" ]; then
+          pip install uv --quiet
+          uv pip install -r "${BUILD_FILE:-requirements.txt}"
+        elif [ -f "requirements.txt" ]; then
+          pip install -r requirements.txt --quiet --no-warn-script-location
+        fi
+        deactivate
+
+        # Syntax validation -- catches import errors and syntax mistakes early.
+        # PYTHONPYCACHEPREFIX redirects bytecode writes to /tmp so py_compile
+        # never tries to create __pycache__ dirs in the (possibly read-only) source tree.
+        echo """ Syntax check """
+        mkdir -p /tmp/pycache
+        find . -name "*.py" \
+          -not -path "./.git/*" \
+          -not -path "./node_modules/*" \
+          -not -path "./vendor/*" \
+          -not -path "./.compile-home/*" \
+          -not -path "*/__pycache__/*" \
+          -not -path "*/__pycache__" \
+          | PYTHONPYCACHEPREFIX=/tmp/pycache xargs python -m py_compile 2>&1 \
+          && echo "All .py files syntax-valid"
+
+        echo """ Python compile complete -- vendor/ ready for Dockerfile COPY """
+
+# Source: platform/tekton/tasks/build/compile-task.yaml
+---
+# "" Language Compile Task """"""""""""""""""""""""""""""""""
+# Compiles application source into artifacts (JAR/WAR/dist) before tests.
+# Results are written to the shared `source` workspace so unit-tests and
+# Kaniko (build-image-local) can consume them without recompiling.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-lang-compile
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: compile
+spec:
+  params:
+    - name: build-tool
+      default: "maven"
+    - name: build-version
+      default: "21"
+    - name: build-file
+      default: "pom.xml"
+  workspaces:
+    - name: source
+  steps:
+    - name: compile
+      # Fixed image (not $(params.build-version)): that param holds language
+      # runtime versions (e.g. python 3.12, go 1.22, dotnet 10.0) which don't
+      # correspond to eclipse-temurin tags. Non-maven/gradle build tools skip
+      # this step's actual work (see case below), so any JDK image suffices.
+      image: k8secops/k8secops:maven-3.9-eclipse-temurin-21
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "500m", memory: "1Gi"}
+        limits:   {cpu: "2000m", memory: "3Gi"}
+      script: |
+        #!/bin/bash
+        set -e
+        BUILD_TOOL="$(params.build-tool)"
+        BUILD_FILE="$(params.build-file)"
+
+        echo "-- Compile stage --  build-tool=$BUILD_TOOL"
+
+        case "$BUILD_TOOL" in
+          maven)
+            EXTRA=""
+            [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "pom.xml" ] && EXTRA="-f $BUILD_FILE"
+            echo """ Maven: compiling (skip tests) """
+            mvn package -DskipTests -B $EXTRA
+            echo ""
+            echo """ Artifacts produced: """
+            find . -name "*.jar" -o -name "*.war" -o -name "*.ear" 2>/dev/null \
+              | grep -v "\.m2\|test-classes\|/original-" | sort \
+              | while read f; do
+                  SIZE=$(du -sh "$f" 2>/dev/null | cut -f1)
+                  echo "  $SIZE  $f"
+                done
+            ;;
+          gradle)
+            EXTRA=""
+            [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "build.gradle" ] && EXTRA="-b $BUILD_FILE"
+            echo """ Gradle: assembling (skip tests) """
+            ./gradlew assemble $EXTRA
+            echo ""
+            echo """ Artifacts produced: """
+            find . -name "*.jar" -o -name "*.war" 2>/dev/null \
+              | grep -v "/test" | sort \
+              | while read f; do
+                  SIZE=$(du -sh "$f" 2>/dev/null | cut -f1)
+                  echo "  $SIZE  $f"
+                done
+            ;;
+          npm)
+            if command -v npm >/dev/null 2>&1; then
+              echo """ npm: installing and building """
+              npm install --silent && npm run build --if-present
+            else
+              echo """ npm compile: skipped (npm not in this image -- handled by multi-stage Dockerfile) """
+            fi
+            ;;
+          pip|python)
+            echo """ Python: no compile step -- source copied directly into image """
+            ;;
+          go)
+            if command -v go >/dev/null 2>&1; then
+              echo """ Go: building """
+              go build ./...
+            else
+              echo """ Go compile: skipped (use multi-stage Dockerfile with RUN go build) """
+            fi
+            ;;
+          dotnet)
+            if command -v dotnet >/dev/null 2>&1; then
+              echo """ .NET: publishing """
+              dotnet publish -c Release -o ./publish --nologo -q
+            else
+              echo """ dotnet compile: skipped (dotnet not in this image -- handled by multi-stage Dockerfile) """
+            fi
+            ;;
+          none|skip|"")
+            echo """ Compile step skipped (build-tool=none) """
+            ;;
+          *)
+            echo """ Unknown build-tool=$BUILD_TOOL -- skipping compile """
+            ;;
+        esac
+
+        echo ""
+        echo """ Compile stage complete """
+
+# Source: platform/tekton/tasks/build/hadolint-task.yaml
+---
+# Hadolint -- Dockerfile lint -- own pod, onError:continue in the pipeline.
+# Runs in parallel with the Kaniko build after pre-build passes so findings
+# land in scan-results without adding to the critical path.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-hadolint
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: build
+spec:
+  params:
+    - name: dockerfile-path
+      default: "./Dockerfile"
+  workspaces:
+    - name: source
+    - name: results
+  steps:
+    - name: hadolint
+      image: k8secops/k8secops:hadolint-v2.12.0-debian
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        mkdir -p $(workspaces.results.path)/dockerfile-lint
+        DF_REL=$(echo "$(params.dockerfile-path)" | sed 's|^\./||')
+        DF="$(workspaces.source.path)/$DF_REL"
+        OUT="$(workspaces.results.path)/dockerfile-lint/hadolint.json"
+        echo "Hadolint: $DF"
+        hadolint "$DF" -f json > "$OUT" 2>/dev/null || true
+        COUNT=$(grep -o '"code"' "$OUT" 2>/dev/null | wc -l | tr -d ' ')
+        echo "Findings: ${COUNT:-0}  ->  dockerfile-lint/hadolint.json"
+
+
+# Source: platform/tekton/tasks/build/malware-scan.yaml
+---
+# "" ClamAV malware scan """"""""""""""""""""""""""""""""""""
+# Scans the locally built image tar for malware before push.
+# Step 1: freshclam updates virus definitions into the results
+#         workspace so they persist across the two steps.
+#         Runs as root -- freshclam needs write access to the DB dir.
+# Step 2: clamscan reads from that same DB dir and scans the tar.
+#         Runs as the clamav user (non-root).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-scan-clamav
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: image-scan
+spec:
+  description: "ClamAV malware scan on built image tar. GPL v2. No token."
+  params:
+    - name: image-ref
+      default: ""
+      description: "Full image reference being scanned (for display only)"
+  workspaces:
+    - name: image-tar
+    - name: results
+  results:
+    - name: INFECTED_COUNT
+  steps:
+    - name: update-signatures
+      image: k8secops/k8secops:clamav-stable
+      securityContext:
+        runAsNonRoot: false
+        runAsUser: 0
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        DB="$(workspaces.results.path)/malware/db"
+        mkdir -p "$DB"
+        echo "Updating ClamAV virus definitions..."
+        # Try live update; fall back to bundled definitions on network failure
+        if freshclam --datadir="$DB" --quiet 2>/dev/null; then
+          echo "Virus definitions updated"
+        else
+          echo "Network update failed -- copying bundled definitions"
+          cp -r /var/lib/clamav/. "$DB/" 2>/dev/null || true
+        fi
+
+    - name: scan
+      image: k8secops/k8secops:clamav-stable
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "200m", memory: "512Mi"}
+        limits:   {cpu: "1000m", memory: "2Gi"}
+      script: |
+        #!/bin/sh
+        DB="$(workspaces.results.path)/malware/db"
+        TAR="$(workspaces.image-tar.path)/image.tar"
+        OUT="$(workspaces.results.path)/malware/clamav.txt"
+        TAR_SIZE=$(du -sh "$TAR" 2>/dev/null | cut -f1 || echo "?")
+
+        echo "-- ClamAV malware scan --"
+        echo "  Image : $(params.image-ref)"
+        echo "  Tar   : $TAR ($TAR_SIZE)"
+        echo ""
+
+        clamscan \
+          --database="$DB" \
+          --recursive \
+          --infected \
+          --no-summary \
+          "$TAR" > "$OUT" 2>&1 || true
+
+        INFECTED=$(grep -c "FOUND" "$OUT" 2>/dev/null || echo "0")
+        printf '%s' "$INFECTED" > "$(results.INFECTED_COUNT.path)"
+        echo "ClamAV: $INFECTED infected file(s) found"
+        SIZE=$(du -sh "$OUT" 2>/dev/null | cut -f1 || echo "0B")
+        echo "Report: malware/clamav.txt  ($SIZE, $INFECTED infected)"
+        if [ "$INFECTED" -gt "0" ]; then
+          echo ""
+          echo "INFECTED FILES:"
+          grep "FOUND" "$OUT" || true
+        fi
+
+# Source: platform/tekton/tasks/build/notify-build-status-task.yaml
+---
+# "" Notify Build Status (finally task, isolated build namespace) """
+# Opt-in, see values.yaml imageBuildIsolation. Lives in gitops-image-builds.
+# Mirrors gitops-notify-status's shape but posts to the isolated build's
+# own callback endpoint (api/pipelines_build.py).
+#
+# IMPORTANT: params here are pipeline-level only ($(tasks.status), always
+# resolvable) -- never a specific task's $(tasks.<name>.results.*). If any
+# upstream task in the chain fails, build-image-candidate (and clamav-scan)
+# never run, and Tekton silently SKIPS a finally task that references an
+# unresolvable result instead of running it with an empty value -- which
+# would mean the operator never learns the build failed. The candidate
+# image ref/digest are reported separately, inline, by build-image-
+# candidate itself the moment it succeeds (see gitops-build-image-candidate's
+# notify-built step) -- decoupled from this pipeline-completion signal.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-notify-build-status
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: notify
+spec:
+  params:
+    - name: pipeline-run-id
+      type: string
+    - name: operator-api-url
+      type: string
+    - name: pipeline-status
+      type: string
+      default: "Unknown"
+  steps:
+    - name: notify
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: OPERATOR_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gitops-operator-token
+              key: operatorApiToken
+      script: |
+        #!/usr/bin/env python3
+        import urllib.request, json, os
+
+        token = os.environ.get("OPERATOR_API_TOKEN", "")
+        payload = json.dumps({
+            "status": "$(params.pipeline-status)",
+        }).encode()
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            req = urllib.request.Request(
+                "$(params.operator-api-url)/api/v1/pipelines/$(params.pipeline-run-id)/build-status",
+                data=payload,
+                headers=headers,
+                method="POST")
+            urllib.request.urlopen(req, timeout=10)
+        except Exception as e:
+            print(f"Build-status notify failed: {e}")
+
+# Source: platform/tekton/tasks/build/pre-build-task.yaml
+---
+# "" Build image locally -- NO push """""""""""""""""""""""""
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-pre-build
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: build
+spec:
+  description: |
+    Verifies compiled artifacts exist and validates Dockerfile COPY sources
+    before Kaniko runs. Runs in its own pod so a failure here is isolated --
+    it does not cancel hadolint and gives a fast, clear error before spending
+    time on the build.
+  params:
+    - name: build-tool
+      default: "maven"
+    - name: language
+      default: "java"
+    - name: dockerfile-path
+      default: "./Dockerfile"
+    - name: build-context
+      default: "."
+  workspaces:
+    - name: source
+  steps:
+    - name: verify-artifacts
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/usr/bin/env python3
+        # Hard-requires a pre-built, copyable artifact for every language --
+        # the compile Task already produces it (see compile-*-task.yaml), and
+        # the Dockerfile must COPY it, never re-run the build tool inside
+        # Kaniko. This is a deliberate, fleet-wide breaking change: apps with
+        # a Dockerfile that re-installs/rebuilds inside Kaniko will fail here
+        # until restructured to COPY the artifact instead. Required so that
+        # build-time credentials (private Maven/npm/NuGet/Go-module/PyPI
+        # repos, see the extra-credentials feature) reach the install step --
+        # they're only available here, in the compile Task, never inside
+        # Kaniko's separately-privileged build.
+        import pathlib, sys
+
+        build_tool    = "$(params.build-tool)"
+        language      = "$(params.language)"
+        source_dir    = pathlib.Path("$(workspaces.source.path)")
+        build_context = "$(params.build-context)"
+        # Artifacts (vendor/, node_modules/, bin/, publish-output/) are created
+        # by the compile Task's workingDir, which is source/<build-context> --
+        # look for them there, not at the workspace root, or subdirectory
+        # buildContexts (e.g. a monorepo app in "operator/") always fail here
+        # even though compile succeeded.
+        context_dir = source_dir if build_context in (".", "./", "") \
+                      else source_dir / build_context.strip("./")
+
+        def require(path: pathlib.Path, what: str, fix: str):
+            missing = not path.exists() or (path.is_dir() and not any(path.iterdir()))
+            if missing:
+                print(f"ERROR: {what} not found at {path.relative_to(source_dir)} -- "
+                      f"compile stage may have failed, or the Dockerfile re-runs the "
+                      f"build tool instead of copying the compile stage's output.")
+                print(f"  FIX: {fix}")
+                sys.exit(1)
+            print(f"-- {what} ready for Kaniko: {path.relative_to(source_dir)} --")
+
+        if build_tool in ("maven", "gradle"):
+            jars = [p for p in source_dir.rglob("*.jar")
+                    if ".m2" not in str(p) and "test-classes" not in str(p)
+                    and "original-" not in p.name]
+            if not jars:
+                print("ERROR: No JAR found -- compile stage may have failed.")
+                sys.exit(1)
+            print("-- Build artifacts ready for Kaniko: --")
+            for j in sorted(jars):
+                print(f"  {j.stat().st_size // 1024} KB  {j.relative_to(source_dir)}")
+        elif build_tool in ("npm", "yarn", "pnpm"):
+            require(context_dir / "node_modules", "node_modules/",
+                     "Dockerfile should COPY node_modules instead of running npm/yarn/pnpm install.")
+            if language in ("react", "nextjs"):
+                found = [d for d in ("dist", "build", ".next") if (context_dir / d).exists()]
+                if not found:
+                    print("ERROR: No dist/, build/, or .next/ directory found -- "
+                          "the compile stage's 'npm run build' may have failed.")
+                    sys.exit(1)
+                print(f"-- Build output ready: {', '.join(found)} --")
+        elif build_tool == "go":
+            require(context_dir / "bin", "Compiled Go binary (bin/)",
+                    "Dockerfile should COPY the bin/ directory instead of running 'go build'.")
+        elif build_tool == "dotnet":
+            require(context_dir / "publish-output", "dotnet publish output (publish-output/)",
+                    "Dockerfile should COPY publish-output/ instead of running 'dotnet publish'.")
+        elif build_tool == "pip":
+            require(context_dir / "vendor", "Python virtualenv (vendor/)",
+                    "Dockerfile should COPY vendor/ instead of running pip/poetry/pdm/pipenv/uv install.")
+        else:
+            print(f"-- build-tool={build_tool}: artifacts managed by Dockerfile --")
+
+    - name: validate-dockerfile
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/usr/bin/env python3
+        import re, pathlib, sys
+
+        source_dir = pathlib.Path("$(workspaces.source.path)")
+        df_rel     = "$(params.dockerfile-path)".lstrip("./")
+        df_path    = source_dir / df_rel if df_rel else source_dir / "Dockerfile"
+
+        # Single-stage, COPY-only by design (no RUN install/build) -- the
+        # compile Task already produced the final artifact (vendor/, bin/,
+        # publish-output/, node_modules+dist) in the source workspace; these
+        # generated Dockerfiles just package it. This is what lets build-time
+        # credentials (private Maven/npm/NuGet/Go-module/PyPI repos) actually
+        # reach the install step, and matches what verify-artifacts now
+        # hard-requires for every language.
+        DEFAULT_DOCKERFILES = {
+            "python": "FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\n"
+                      "ENV PATH=\"/app/vendor/bin:$PATH\"\n"
+                      "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
+            "nodejs": "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\n"
+                      "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
+            # `serve` is a tooling install (static file server), not an
+            # application dependency -- always from the public npm registry,
+            # never needs the app's private-repo credentials, so installing
+            # it here doesn't reintroduce the problem this change fixes.
+            "react":  "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\n"
+                      "RUN npm install -g serve 2>/dev/null || true\n"
+                      "CMD [\"serve\", \"-s\", \"build\", \"-l\", \"3000\"]\n",
+            "nextjs": "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\n"
+                      "CMD [\"npm\", \"start\"]\n",
+            "go":     "FROM alpine:3.20\nWORKDIR /app\nCOPY bin/ ./bin/\n"
+                      "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
+            "dotnet": "FROM mcr.microsoft.com/dotnet/aspnet:9.0\nWORKDIR /app\n"
+                      "COPY publish-output/. .\n"
+                      "CMD [\"sh\", \"-c\", \"sleep infinity\"]\n",
+        }
+
+        if not df_path.exists():
+            default = DEFAULT_DOCKERFILES.get("$(params.language)")
+            if default:
+                print(f"No Dockerfile at {df_path} -- generating default for $(params.language)")
+                df_path.write_text(default)
+            else:
+                print(f"ERROR: Dockerfile not found at {df_path}")
+                sys.exit(1)
+
+        lines = df_path.read_text().splitlines()
+        from_count = sum(1 for l in lines if re.match(r'^\s*FROM\s+', l, re.I))
+        if from_count > 1:
+            # Multi-stage Dockerfiles still pass through verify-artifacts (the
+            # PREVIOUS step) like every other language now -- that step
+            # already hard-failed if the compile-stage artifact is missing,
+            # regardless of single- vs multi-stage. This branch only skips
+            # the host-filesystem COPY-source check below, which doesn't
+            # apply to `COPY --from=<stage>` instructions. Build artifacts
+            # are deliberately NOT excluded from the Docker context here
+            # (unlike the old re-install-inside-Kaniko pattern) -- a
+            # multi-stage Dockerfile may legitimately need to COPY them in.
+            print(f"  Multi-stage build ({from_count} FROM stages) -- "
+                  f"skipping host COPY-source check (handled by verify-artifacts already).")
+            sys.exit(0)
+
+        print("  Single-stage build -- checking COPY sources:")
+        missing, found = [], []
+        for line in lines:
+            line = line.strip()
+            if re.match(r'^COPY\s+--from=', line, re.I):
+                continue
+            m = re.match(r'^COPY\s+(.+)$', line, re.I)
+            if not m:
+                continue
+            parts = m.group(1).split()
+            for src in parts[:-1]:
+                if src.startswith('--'):
+                    continue
+                src_clean = src.lstrip('./')
+                if '*' in src_clean or '?' in src_clean:
+                    matches = list(source_dir.glob(src_clean))
+                    (found if matches else missing).append(
+                        f"  {'OK' if matches else 'MISSING'} {src}")
+                else:
+                    full = source_dir / src_clean
+                    if full.exists():
+                        found.append(f"  OK {src}  ({full.stat().st_size // 1024} KB)")
+                    else:
+                        candidates = list(source_dir.rglob(f"*{pathlib.Path(src_clean).name}*"))
+                        hint = f"  -> did you mean: {candidates[0].relative_to(source_dir)} ?" if candidates else ""
+                        missing.append(f"  MISSING {src}{hint}")
+
+        for f in found: print(f)
+        if missing:
+            print("\nERROR: Dockerfile COPY sources missing:")
+            for m in missing: print(m)
+            sys.exit(1)
+        print(f"\nAll {len(found)} COPY source(s) verified OK")
+

@@ -26,6 +26,7 @@ set -euo pipefail
 CHART_OCI="oci://registry-1.docker.io/k8secops/gitops-platform"
 CHART_VERSION="1.0.0"
 TEKTON_TASKS_URL="https://raw.githubusercontent.com/k8secops/k8secops-script/main/tekton-tasks.yaml"
+TEKTON_TASKS_IMAGE_BUILDS_URL="https://raw.githubusercontent.com/k8secops/k8secops-script/main/tekton-tasks-image-builds.yaml"
 
 # ── Versions ─────────────────────────────────────────────────────────────────
 TEKTON_VERSION="v1.13.0"
@@ -36,6 +37,7 @@ NS_CORE="gitops-core"
 NS_TOOLING="gitops-tooling"
 NS_DB="gitops-db"
 NS_TEKTON="tekton-pipelines"
+NS_IMAGE_BUILDS="gitops-image-builds"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -176,12 +178,24 @@ info "Setup complete — proceeding with installation."
 # ── Step 1: Namespaces ────────────────────────────────────────────────────────
 section "Step 1 — Namespaces"
 
-for ns in "$NS_CORE" "$NS_TOOLING" "$NS_DB" "$NS_TEKTON"; do
+for ns in "$NS_CORE" "$NS_TOOLING" "$NS_DB" "$NS_TEKTON" "$NS_IMAGE_BUILDS"; do
   kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   info "Namespace: $ns"
 done
 
 kubectl label namespace "$NS_TOOLING" \
+  pod-security.kubernetes.io/enforce=privileged \
+  pod-security.kubernetes.io/enforce-version=latest \
+  --overwrite >/dev/null
+
+# gitops-image-builds is created unconditionally (like the other namespaces
+# above) so a customer can enable imageBuildIsolation later with a plain
+# `helm upgrade --set imageBuildIsolation.enabled=true` -- no re-install
+# needed. It must stay PSA privileged even if the feature is never turned
+# on; RBAC (not PSA) is what actually restricts who can create pods here.
+kubectl label namespace "$NS_IMAGE_BUILDS" \
+  app.kubernetes.io/managed-by=gitops-platform \
+  app.kubernetes.io/part-of=gitops-platform \
   pod-security.kubernetes.io/enforce=privileged \
   pod-security.kubernetes.io/enforce-version=latest \
   --overwrite >/dev/null
@@ -324,6 +338,14 @@ section "Step 5 — Applying 30+ security scanner tasks"
 
 kubectl apply -n "$NS_TEKTON" -f "${TEKTON_TASKS_URL}"
 info "Scanner tasks applied"
+
+# Isolated-build-namespace copies of the tasks the imageBuildIsolation
+# feature's Pipeline needs (Tekton has no cross-namespace taskRef). Applied
+# unconditionally, same rationale as creating NS_IMAGE_BUILDS unconditionally
+# in Step 1 -- so enabling the feature later needs only a Helm upgrade, not
+# a re-run of this script.
+kubectl apply -n "$NS_IMAGE_BUILDS" -f "${TEKTON_TASKS_IMAGE_BUILDS_URL}"
+info "Image-build-isolation tasks applied"
 
 # ── Step 5.5: Seed NVD vulnerability database ─────────────────────────────────
 # OWASP Dependency-Check requires the NVD database. The nvd-updater CronJob

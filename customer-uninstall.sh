@@ -25,6 +25,7 @@ NS_CORE="gitops-core"
 NS_TOOLING="gitops-tooling"
 NS_DB="gitops-db"
 NS_TEKTON="tekton-pipelines"
+NS_IMAGE_BUILDS="gitops-image-builds"
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()    { echo -e "${GREEN}[INFO]${NC}  $*"; }
@@ -167,7 +168,7 @@ if [[ "$PURGE" == "true" ]]; then
     --ignore-not-found 2>/dev/null || true
   info "Tekton removed."
 
-  kubectl delete namespace "${NS_CORE}" "${NS_TOOLING}" "${NS_DB}" "${NS_TEKTON}" \
+  kubectl delete namespace "${NS_CORE}" "${NS_TOOLING}" "${NS_DB}" "${NS_TEKTON}" "${NS_IMAGE_BUILDS}" \
     --ignore-not-found 2>/dev/null || true
   info "Platform namespaces deleted."
 fi
@@ -179,7 +180,7 @@ echo ""
 
 if [[ "$PURGE" == "false" ]]; then
   echo "  Kept (safe to reinstall over):"
-  echo "    Namespaces  : ${NS_CORE}, ${NS_TOOLING}, ${NS_DB}, ${NS_TEKTON}"
+  echo "    Namespaces  : ${NS_CORE}, ${NS_TOOLING}, ${NS_DB}, ${NS_TEKTON}, ${NS_IMAGE_BUILDS}"
   echo "    PVCs        : PostgreSQL data in ${NS_DB} (pipeline history preserved)"
   echo "    Tekton      : controllers + CRDs"
   echo ""
