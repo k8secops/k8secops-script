@@ -90,7 +90,7 @@ All four variables are optional — unset variables cause the corresponding prom
 |------|--------|
 | Pre-flight | Checks `kubectl` and `helm` are installed, verifies cluster is reachable |
 | Setup | Collects UI password, NVD key, Docker Hub credentials |
-| 1 | Creates namespaces (`gitops-core`, `gitops-tooling`, `gitops-db`, `tekton-pipelines`) |
+| 1 | Creates namespaces (`gitops-core`, `gitops-tooling`, `gitops-db`, `tekton-pipelines`, `gitops-image-builds`) |
 | 2 | Installs Tekton Pipelines v1.13.0 |
 | 3 | Installs Sealed Secrets controller |
 | 4 | Installs the GitOps Platform Helm chart from Docker Hub OCI |
@@ -224,12 +224,12 @@ curl -sfL https://raw.githubusercontent.com/k8secops/k8secops-script/main/reset-
 
 ## Trial Period
 
-The platform runs as a **free trial**. The expiry date is baked into the operator image at build time.
+The platform runs as a **30-day free trial**. The expiry date is baked into the operator image at build time (reinstalling or wiping the database does not reset it — only a new image from k8secops does).
 
 | Period | Experience |
 |--------|-----------|
-| Days 1–7 | Full functionality, no restrictions |
-| Days 8 → expiry | Warning banner: *"Your trial expires in N days"* |
+| Day 1 → 3 days before expiry | Full functionality, no restrictions |
+| Final 3 days | Warning banner: *"Your trial expires in N days"* |
 | After expiry | Trial-expired screen on all pages. Health checks still pass. |
 
 > Pipeline history, AI reports, and configuration are preserved in PostgreSQL throughout and after the trial.
@@ -283,8 +283,11 @@ After every scan the AI analyses all findings and produces a **risk grade A–F*
 curl -sfL https://raw.githubusercontent.com/k8secops/k8secops-script/main/customer-uninstall.sh | bash
 ```
 
-Removes: Helm releases, Sealed Secrets, all credentials, cache PVCs.  
-Keeps: namespaces, PostgreSQL PVCs (all pipeline history preserved), Tekton controllers.
+Removes: Helm releases, Sealed Secrets, per-app secrets, cache PVCs.  
+Keeps: namespaces, PostgreSQL PVCs (all pipeline history preserved), Tekton controllers,
+and the platform's own credentials (operator token, UI password, DB password) — these are
+reused automatically on your next install, which is what keeps previously-configured
+apps' encrypted credentials readable instead of orphaning them.
 
 ### Full wipe — deletes everything including pipeline history
 
