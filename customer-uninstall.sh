@@ -141,12 +141,29 @@ kubectl get secrets -n "${NS_TEKTON}" -o name 2>/dev/null \
 # ── Step 5: Platform secrets and shared caches ────────────────────────────────
 section "Step 5 -- Removing platform secrets and shared caches"
 
-kubectl delete secret gitops-platform-secrets            -n "${NS_CORE}"   --ignore-not-found 2>/dev/null || true
-kubectl delete secret gitops-operator-token              -n "${NS_TEKTON}" --ignore-not-found 2>/dev/null || true
-kubectl delete secret gitops-db-internal                 -n "${NS_DB}"     --ignore-not-found 2>/dev/null || true
-kubectl delete secret "${HELM_RELEASE}-nvd-api-key"      -n "${NS_TEKTON}" --ignore-not-found 2>/dev/null || true
+# gitops-platform-secrets/gitops-db-internal are deliberately NOT deleted in
+# default (non-purge) mode. Both carry helm.sh/resource-policy: keep
+# specifically so `helm uninstall` preserves them -- kubectl-deleting them
+# here would defeat that on every default uninstall. gitops-platform-secrets
+# holds operatorApiToken, which every row in the encrypted app_credentials
+# Postgres table is encrypted against (see operator/src/api/state_credentials.py
+# _fernet(), HKDF-derived from that token); gitops-db-internal holds the
+# PostgreSQL password, which is baked into the data directory at first
+# initdb and never re-read from the Secret on restart. Since default mode
+# explicitly preserves PostgreSQL's PVC/data (see the summary below),
+# deleting either secret here would mean a subsequent reinstall generates a
+# *new* random token/password that no longer matches the preserved data --
+# permanently orphaning every encrypted credential, and breaking DB
+# connectivity outright. Only delete them in --purge, where the PVCs (and
+# therefore this data) are being wiped anyway.
+if [[ "$PURGE" == "true" ]]; then
+  kubectl delete secret gitops-platform-secrets -n "${NS_CORE}" --ignore-not-found 2>/dev/null || true
+  kubectl delete secret gitops-db-internal      -n "${NS_DB}"   --ignore-not-found 2>/dev/null || true
+fi
+kubectl delete secret gitops-operator-token          -n "${NS_TEKTON}" --ignore-not-found 2>/dev/null || true
+kubectl delete secret "${HELM_RELEASE}-nvd-api-key"  -n "${NS_TEKTON}" --ignore-not-found 2>/dev/null || true
 # Shared NVD vulnerability database cache -- public data, re-downloadable
-kubectl delete pvc "${HELM_RELEASE}-vulndb-cache"        -n "${NS_TEKTON}" --ignore-not-found 2>/dev/null || true
+kubectl delete pvc "${HELM_RELEASE}-vulndb-cache"    -n "${NS_TEKTON}" --ignore-not-found 2>/dev/null || true
 info "Platform secrets and caches removed."
 
 # ── Step 6 (--purge only): Remove everything ──────────────────────────────────
@@ -182,6 +199,9 @@ if [[ "$PURGE" == "false" ]]; then
   echo "  Kept (safe to reinstall over):"
   echo "    Namespaces  : ${NS_CORE}, ${NS_TOOLING}, ${NS_DB}, ${NS_TEKTON}, ${NS_IMAGE_BUILDS}"
   echo "    PVCs        : PostgreSQL data in ${NS_DB} (pipeline history preserved)"
+  echo "    Secrets     : gitops-platform-secrets, gitops-db-internal (operator token, UI"
+  echo "                  password, and DB password all reused automatically on reinstall --"
+  echo "                  required so previously-encrypted app credentials stay decryptable)"
   echo "    Tekton      : controllers + CRDs"
   echo ""
   echo "  To also remove those:  re-run with --purge"
