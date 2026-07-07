@@ -1,4 +1,4 @@
-# Source: platform/tekton/tasks/git\git-clone-task.yaml
+# Source: platform/tekton/tasks/git/git-clone-task.yaml
 ---
 # git-clone Task -- replaces the deprecated ClusterTask of the same name.
 # Tekton v0.54+ removed ClusterTask; this Task must live in tekton-pipelines.
@@ -125,7 +125,7 @@ spec:
 
         echo "Cloned $(params.url) @ $(params.revision) -> $RESULT_SHA"
 
-# Source: platform/tekton/tasks/secrets\secrets-scan.yaml
+# Source: platform/tekton/tasks/secrets/secrets-scan.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -265,7 +265,7 @@ spec:
           echo "CRITICAL: $VERIFIED verified credential(s) found -- rotate immediately"
         fi
 
-# Source: platform/tekton/tasks/sast\bandit-task.yaml
+# Source: platform/tekton/tasks/sast/bandit-task.yaml
 ---
 # "" Bandit (Python) """""""""""""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -327,7 +327,7 @@ spec:
         echo "Report: sast/bandit.sarif  ($SIZE, $COUNT findings)"
 
 
-# Source: platform/tekton/tasks/sast\bearer-task.yaml
+# Source: platform/tekton/tasks/sast/bearer-task.yaml
 ---
 # "" Bearer """"""""""""""""""""""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -386,7 +386,7 @@ spec:
         echo "Report: sast/bearer.sarif  ($SIZE, $COUNT findings)"
 
 
-# Source: platform/tekton/tasks/sast\checkov-task.yaml
+# Source: platform/tekton/tasks/sast/checkov-task.yaml
 ---
 # "" Checkov -- IaC security scanner """"""""""""""""""""""""
 # Scans Dockerfiles and Kubernetes manifests for misconfigurations,
@@ -474,7 +474,7 @@ spec:
         echo "Checkov findings: $COUNT  ($SIZE)"
         echo "Report: iac/$(params.output-name).sarif"
 
-# Source: platform/tekton/tasks/sast\eslint-security-task.yaml
+# Source: platform/tekton/tasks/sast/eslint-security-task.yaml
 ---
 # "" ESLint Security (Node.js) """""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -552,7 +552,7 @@ spec:
         echo "Report: sast/eslint.json  ($SIZE, $COUNT findings)"
 
 
-# Source: platform/tekton/tasks/sast\gosec-task.yaml
+# Source: platform/tekton/tasks/sast/gosec-task.yaml
 ---
 # "" gosec (Go) """"""""""""""""""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -613,7 +613,7 @@ spec:
         echo "Report: sast/gosec.sarif  ($SIZE, $COUNT findings)"
 
 
-# Source: platform/tekton/tasks/sast\lang-sast-task.yaml
+# Source: platform/tekton/tasks/sast/lang-sast-task.yaml
 ---
 # "" Language-specific SAST dispatcher """""""""""""""""""""
 # The operator replaces this task ref with the correct one per language:
@@ -666,7 +666,7 @@ spec:
         print("Language SAST: using fallback (operator should patch this)")
 
 
-# Source: platform/tekton/tasks/sast\roslyn-task.yaml
+# Source: platform/tekton/tasks/sast/roslyn-task.yaml
 ---
 # "" Roslyn Security (.NET) """"""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -745,7 +745,7 @@ spec:
         echo -n "$COUNT" > $(results.FINDING_COUNT.path)
         echo "Roslyn Security: $COUNT findings"
 
-# Source: platform/tekton/tasks/sast\semgrep-task.yaml
+# Source: platform/tekton/tasks/sast/semgrep-task.yaml
 ---
 # "" Semgrep """"""""""""""""""""""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -802,7 +802,7 @@ spec:
         echo "Report: sast/semgrep.sarif  ($SIZE, $COUNT findings)"
 
 
-# Source: platform/tekton/tasks/sast\sonarqube-dotnet-task.yaml
+# Source: platform/tekton/tasks/sast/sonarqube-dotnet-task.yaml
 ---
 # "" SonarQube for .NET (dotnet-sonarscanner, in-cluster) ""
 apiVersion: tekton.dev/v1
@@ -997,7 +997,7 @@ spec:
         open(result_path, "w").write("UNKNOWN")
 
 
-# Source: platform/tekton/tasks/sast\sonarqube-task.yaml
+# Source: platform/tekton/tasks/sast/sonarqube-task.yaml
 ---
 # "" SonarQube (Community Edition, in-cluster, no token) """
 apiVersion: tekton.dev/v1
@@ -1196,7 +1196,7 @@ spec:
         open(result_path, "w").write("UNKNOWN")
 
 
-# Source: platform/tekton/tasks/sast\spotbugs-task.yaml
+# Source: platform/tekton/tasks/sast/spotbugs-task.yaml
 ---
 # "" SpotBugs (Java) """""""""""""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -1308,7 +1308,7 @@ spec:
         echo "Report: sast/spotbugs.xml  ($SIZE, $COUNT findings)"
 
 
-# Source: platform/tekton/tasks/sca\sca-tasks.yaml
+# Source: platform/tekton/tasks/sca/sca-tasks.yaml
 ---
 # "" OWASP Dependency-Check """""""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -1449,7 +1449,7 @@ spec:
         SIZE=$(du -sh $(workspaces.results.path)/sca/osv.json 2>/dev/null | cut -f1 || echo "0B")
         echo "Report: sca/osv.json  ($SIZE, $COUNT vulns)  |  sca/osv.sarif"
 
-# Source: platform/tekton/tasks/tests\test-dotnet-task.yaml
+# Source: platform/tekton/tasks/tests/test-dotnet-task.yaml
 ---
 # "" .NET Unit Tests """""""""""""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -1677,7 +1677,7 @@ spec:
         print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 
-# Source: platform/tekton/tasks/tests\test-go-task.yaml
+# Source: platform/tekton/tasks/tests/test-go-task.yaml
 ---
 # "" Go Unit Tests """""""""""""""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -1874,7 +1874,7 @@ spec:
         print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 
-# Source: platform/tekton/tasks/tests\test-java-task.yaml
+# Source: platform/tekton/tasks/tests/test-java-task.yaml
 ---
 # "" Java Unit Tests """"""""""""""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -2101,7 +2101,7 @@ spec:
         print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 
-# Source: platform/tekton/tasks/tests\test-nodejs-task.yaml
+# Source: platform/tekton/tasks/tests/test-nodejs-task.yaml
 ---
 # "" Node.js Unit Tests """"""""""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -2296,7 +2296,7 @@ spec:
         print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 
-# Source: platform/tekton/tasks/tests\test-python-task.yaml
+# Source: platform/tekton/tasks/tests/test-python-task.yaml
 ---
 # "" Python Unit Tests """"""""""""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -2492,7 +2492,7 @@ spec:
         print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 
-# Source: platform/tekton/tasks/tests\unit-tests-task.yaml
+# Source: platform/tekton/tasks/tests/unit-tests-task.yaml
 ---
 # "" Unit Tests dispatcher (operator patches per language) ""
 apiVersion: tekton.dev/v1
@@ -2548,7 +2548,170 @@ spec:
         open("$(results.COVERAGE_PCT.path)","w").write("0")
         print("Unit test dispatcher: operator should patch this task")
 
-# Source: platform/tekton/tasks/build\build-image-local-task.yaml
+# Source: platform/tekton/tasks/build/build-image-candidate-task.yaml
+---
+# "" Build Image Candidate (isolated build namespace) ""''""
+# Opt-in, see values.yaml imageBuildIsolation. Lives in the isolated
+# gitops-image-builds namespace, NOT tekton-pipelines -- this is the only
+# task in that namespace that needs runAsUser:0 (Kaniko's overlayfs layer
+# extraction). Unlike gitops-build-image-local (--no-push, scan-before-push),
+# this task PUSHES directly to a "-candidate" tag -- the human gate promotes
+# it to the real tag after approval (see gitops-image-promote). It also
+# saves a local tar (--tar-path) so an optional clamav scan in THIS
+# namespace can still run against the exact bytes just built.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-build-image-candidate
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: build
+spec:
+  description: |
+    Builds container image using Kaniko and pushes it to a "-candidate" tag.
+    Also saves a local tar for the optional in-namespace clamav scan.
+  params:
+    - name: image-registry
+      type: string
+    - name: image-name
+      type: string
+    - name: candidate-image-tag
+      type: string
+    - name: language
+      type: string
+    - name: build-tool
+      default: "maven"
+    - name: build-version
+      default: "21"
+    - name: build-file
+      default: "pom.xml"
+    - name: dockerfile-path
+      default: "./Dockerfile"
+    - name: context
+      default: "./"
+    - name: registry-mirror
+      default: ""
+      description: "Optional registry mirror URL for Kaniko base image pulls."
+    - name: operator-api-url
+      default: "http://gitops-operator.gitops-core.svc.cluster.local:8080"
+    - name: pipeline-run-id
+      default: ""
+  workspaces:
+    - name: source
+    - name: image-tar
+    - name: kaniko-cache
+    - name: registry-credentials
+      description: "Docker config.json for authenticating base image pulls and the candidate push"
+  results:
+    - name: CANDIDATE_IMAGE_REF
+    - name: CANDIDATE_IMAGE_DIGEST
+  steps:
+    - name: build-and-push
+      image: k8secops/k8secops:gitops-builder-1.0.0
+      securityContext:
+        runAsUser: 0
+        allowPrivilegeEscalation: false
+      computeResources:
+        requests: {cpu: "500m", memory: "1Gi"}
+        limits:   {cpu: "2000m", memory: "4Gi"}
+      env:
+        - name: DOCKER_CONFIG
+          value: $(workspaces.registry-credentials.path)
+      script: |
+        #!/bin/sh
+        set -e
+
+        DF="$(params.dockerfile-path)"
+        DF="${DF#./}"
+        CTX="$(params.context)"
+        CTX="${CTX#./}"
+
+        # Normalise Docker Hub registry the same way gitops-image-push does --
+        # Kaniko's --no-push mode (gitops-build-image-local) has never needed
+        # this because it never actually pushes; this task does.
+        REGISTRY="$(params.image-registry)"
+        case "$REGISTRY" in
+          *hub.docker.com*|*docker.io*|*registry-1.docker.io*) REGISTRY="index.docker.io" ;;
+        esac
+        DESTINATION="$REGISTRY/$(params.image-name):$(params.candidate-image-tag)"
+
+        echo "Building candidate image: $DESTINATION"
+        echo "Dockerfile:  $(workspaces.source.path)/$DF"
+        echo "Context:     $(workspaces.source.path)/$CTX"
+
+        MIRROR_FLAG=""
+        if [ -n "$(params.registry-mirror)" ]; then
+          MIRROR_FLAG="--registry-mirror=$(params.registry-mirror)"
+          echo "Using registry mirror: $(params.registry-mirror)"
+        fi
+
+        # shellcheck disable=SC2086
+        /kaniko/executor \
+          --dockerfile="$(workspaces.source.path)/$DF" \
+          --context="dir://$(workspaces.source.path)/$CTX" \
+          --destination="$DESTINATION" \
+          --tar-path="$(workspaces.image-tar.path)/image.tar" \
+          --digest-file="/tmp/digest" \
+          --snapshot-mode=full \
+          --cache-dir="$(workspaces.kaniko-cache.path)" \
+          --cache-ttl=168h \
+          --log-format=text \
+          --verbosity=info \
+          $MIRROR_FLAG
+
+        DIGEST=$(cat /tmp/digest 2>/dev/null || echo "unknown")
+        printf '%s' "$DESTINATION" > "$(results.CANDIDATE_IMAGE_REF.path)"
+        printf '%s' "$DIGEST"      > "$(results.CANDIDATE_IMAGE_DIGEST.path)"
+        echo "Pushed candidate: $DESTINATION@$DIGEST"
+
+    - name: notify-built
+      # Reports the candidate ref/digest to the operator inline, the moment
+      # this task succeeds -- deliberately NOT deferred to the pipeline's
+      # finally task (gitops-notify-build-status), which only ever carries
+      # pipeline-level values. See that task's comment for why: a finally
+      # task that references THIS task's results would be silently skipped
+      # whenever an upstream task (clone/compile/pre-build) fails instead.
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: OPERATOR_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gitops-operator-token
+              key: operatorApiToken
+      script: |
+        #!/usr/bin/env python3
+        import urllib.request, json, os
+
+        ref    = open("$(results.CANDIDATE_IMAGE_REF.path)").read()
+        digest = open("$(results.CANDIDATE_IMAGE_DIGEST.path)").read()
+        token  = os.environ.get("OPERATOR_API_TOKEN", "")
+
+        payload = json.dumps({
+            "candidateImageRef":    ref,
+            "candidateImageDigest": digest,
+        }).encode()
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            req = urllib.request.Request(
+                "$(params.operator-api-url)/api/v1/pipelines/$(params.pipeline-run-id)/candidate-built",
+                data=payload, headers=headers, method="POST")
+            urllib.request.urlopen(req, timeout=10)
+            print(f"Notified operator: candidate built {ref}")
+        except Exception as e:
+            print(f"Operator notify failed (non-fatal): {e}")
+
+# Source: platform/tekton/tasks/build/build-image-local-task.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -2691,7 +2854,7 @@ spec:
             print(f"Operator notify failed (non-fatal): {e}")
 
 
-# Source: platform/tekton/tasks/build\compile-dotnet-task.yaml
+# Source: platform/tekton/tasks/build/compile-dotnet-task.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -2970,7 +3133,7 @@ spec:
           | while read f; do echo "  $(du -sh "$f" | cut -f1)  $f"; done
         echo """ .NET compile complete """
 
-# Source: platform/tekton/tasks/build\compile-go-task.yaml
+# Source: platform/tekton/tasks/build/compile-go-task.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -3135,7 +3298,7 @@ spec:
         echo """ Go compile complete -- binaries: """
         ls -la ./bin/
 
-# Source: platform/tekton/tasks/build\compile-java-task.yaml
+# Source: platform/tekton/tasks/build/compile-java-task.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -3348,7 +3511,7 @@ spec:
         esac
         echo """ Java compile complete """
 
-# Source: platform/tekton/tasks/build\compile-nodejs-task.yaml
+# Source: platform/tekton/tasks/build/compile-nodejs-task.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -3521,7 +3684,7 @@ spec:
         esac
         echo """ Node.js compile complete """
 
-# Source: platform/tekton/tasks/build\compile-python-task.yaml
+# Source: platform/tekton/tasks/build/compile-python-task.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -3713,7 +3876,7 @@ spec:
 
         echo """ Python compile complete -- vendor/ ready for Dockerfile COPY """
 
-# Source: platform/tekton/tasks/build\compile-task.yaml
+# Source: platform/tekton/tasks/build/compile-task.yaml
 ---
 # "" Language Compile Task """"""""""""""""""""""""""""""""""
 # Compiles application source into artifacts (JAR/WAR/dist) before tests.
@@ -3831,7 +3994,7 @@ spec:
         echo ""
         echo """ Compile stage complete """
 
-# Source: platform/tekton/tasks/build\hadolint-task.yaml
+# Source: platform/tekton/tasks/build/hadolint-task.yaml
 ---
 # Hadolint -- Dockerfile lint -- own pod, onError:continue in the pipeline.
 # Runs in parallel with the Kaniko build after pre-build passes so findings
@@ -3875,7 +4038,7 @@ spec:
         echo "Findings: ${COUNT:-0}  ->  dockerfile-lint/hadolint.json"
 
 
-# Source: platform/tekton/tasks/build\human-gate-task.yaml
+# Source: platform/tekton/tasks/build/human-gate-task.yaml
 ---
 # "" Human Gate """"""""""""""""""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -3986,7 +4149,151 @@ spec:
         sys.exit(1)
 
 
-# Source: platform/tekton/tasks/build\image-push-task.yaml
+# Source: platform/tekton/tasks/build/image-promote-task.yaml
+---
+# "" Image Promote (isolation opt-in, only after human YES) """
+# Replaces gitops-image-push in the main pipeline when values.yaml
+# imageBuildIsolation.enabled=true. The image was already pushed to a
+# "-candidate" tag by the isolated build namespace (gitops-build-image-
+# candidate); this task retags it to the real tag via a registry-to-registry
+# copy -- no local disk, no image-tar workspace needed. Emits the same
+# results and calls the same image-pushed callback gitops-image-push does,
+# so downstream image-sign / pipelines_gate.py need no changes.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-image-promote
+  namespace: tekton-pipelines
+  labels:
+    gitops-platform.io/stage: push
+spec:
+  description: |
+    Retags the approved candidate image to the real tag (registry-to-
+    registry skopeo copy), then best-effort deletes the candidate tag.
+  params:
+    - name: candidate-image-ref
+      type: string
+    - name: image-registry
+      type: string
+    - name: image-name
+      type: string
+    - name: image-tag
+      type: string
+    - name: operator-api-url
+      type: string
+    - name: pipeline-run-id
+      type: string
+  workspaces:
+    - name: registry-credentials
+  results:
+    - name: IMAGE_TAG
+    - name: IMAGE_DIGEST
+    - name: IMAGE_FULL_URL
+  steps:
+    - name: promote
+      image: k8secops/k8secops:skopeo-v1.16.0
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        set -e
+        CREDS_DIR="$(workspaces.registry-credentials.path)"
+
+        REGISTRY="$(params.image-registry)"
+        case "$REGISTRY" in
+          *hub.docker.com*|*docker.io*|*registry-1.docker.io*) REGISTRY="index.docker.io" ;;
+        esac
+        FULL_REF="$REGISTRY/$(params.image-name):$(params.image-tag)"
+        CANDIDATE_REF="$(params.candidate-image-ref)"
+
+        TEMP_AUTH=/tmp/config.json
+        sed "s|registry.hub.docker.com|index.docker.io|g; s|registry-1.docker.io|index.docker.io|g" \
+          "$CREDS_DIR/config.json" > "$TEMP_AUTH" 2>/dev/null || cp "$CREDS_DIR/config.json" "$TEMP_AUTH"
+
+        echo "Promoting $CANDIDATE_REF -> $FULL_REF..."
+        skopeo copy \
+          --authfile "$TEMP_AUTH" \
+          "docker://$CANDIDATE_REF" \
+          "docker://$FULL_REF"
+
+        DIGEST=$(skopeo inspect --authfile "$TEMP_AUTH" \
+          "docker://$FULL_REF" 2>/dev/null | grep -o '"Digest":"[^"]*"' \
+          | head -1 | cut -d'"' -f4)
+        [ -z "$DIGEST" ] && DIGEST="unknown"
+
+        printf '%s' "$(params.image-tag)" > "$(results.IMAGE_TAG.path)"
+        printf '%s' "$DIGEST"             > "$(results.IMAGE_DIGEST.path)"
+        printf '%s' "$FULL_REF"           > "$(results.IMAGE_FULL_URL.path)"
+        echo "Promoted: $FULL_REF@$DIGEST"
+
+        # Best-effort candidate cleanup now that it's been promoted -- NOT
+        # reliable on Docker Hub, which doesn't support the standard v2
+        # manifest DELETE API. Never fails the task either way; full GC
+        # (including the on-reject case, where this task never runs at all)
+        # is a documented follow-up.
+        skopeo delete --authfile "$TEMP_AUTH" "docker://$CANDIDATE_REF" 2>/dev/null \
+          && echo "Deleted candidate tag $CANDIDATE_REF" \
+          || echo "Candidate tag cleanup skipped/unsupported by registry (non-fatal): $CANDIDATE_REF"
+
+    - name: notify-pushed
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: OPERATOR_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gitops-operator-token
+              key: operatorApiToken
+      script: |
+        #!/usr/bin/env python3
+        import urllib.request, json, os
+
+        tag    = open("$(results.IMAGE_TAG.path)").read()
+        digest = open("$(results.IMAGE_DIGEST.path)").read()
+        url    = open("$(results.IMAGE_FULL_URL.path)").read()
+        token  = os.environ.get("OPERATOR_API_TOKEN", "")
+
+        payload = json.dumps({
+            "runId": "$(params.pipeline-run-id)",
+            "imageTag": tag,
+            "imageDigest": digest,
+            "imageUrl": url,
+            "imageSigned": False,
+            "status": "pushed"
+        }).encode()
+
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        try:
+            req = urllib.request.Request(
+                "$(params.operator-api-url)/api/v1/pipelines/$(params.pipeline-run-id)/image-pushed",
+                data=payload,
+                headers=headers,
+                method="POST"
+            )
+            urllib.request.urlopen(req, timeout=10)
+            print(f"Notified operator: image promoted {url}")
+        except Exception as e:
+            print(f"Operator notify failed (non-fatal): {e}")
+
+# Source: platform/tekton/tasks/build/image-push-task.yaml
 ---
 # "" Image Push (only after human YES) """"""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -4150,7 +4457,7 @@ spec:
             print(f"Operator notify failed (non-fatal): {e}")
 
 
-# Source: platform/tekton/tasks/build\image-sign-task.yaml
+# Source: platform/tekton/tasks/build/image-sign-task.yaml
 ---
 # "" Image Sign (optional -- only runs when require-image-signing=true) """""
 # This task is separate from image-push so that bitnami/cosign is NEVER
@@ -4265,7 +4572,7 @@ spec:
             print(f"Operator notify failed (non-fatal): {e}")
 
 
-# Source: platform/tekton/tasks/build\malware-scan.yaml
+# Source: platform/tekton/tasks/build/malware-scan.yaml
 ---
 # "" ClamAV malware scan """"""""""""""""""""""""""""""""""""
 # Scans the locally built image tar for malware before push.
@@ -4361,7 +4668,78 @@ spec:
           grep "FOUND" "$OUT" || true
         fi
 
-# Source: platform/tekton/tasks/build\notify-status-task.yaml
+# Source: platform/tekton/tasks/build/notify-build-status-task.yaml
+---
+# "" Notify Build Status (finally task, isolated build namespace) """
+# Opt-in, see values.yaml imageBuildIsolation. Lives in gitops-image-builds.
+# Mirrors gitops-notify-status's shape but posts to the isolated build's
+# own callback endpoint (api/pipelines_build.py).
+#
+# IMPORTANT: params here are pipeline-level only ($(tasks.status), always
+# resolvable) -- never a specific task's $(tasks.<name>.results.*). If any
+# upstream task in the chain fails, build-image-candidate (and clamav-scan)
+# never run, and Tekton silently SKIPS a finally task that references an
+# unresolvable result instead of running it with an empty value -- which
+# would mean the operator never learns the build failed. The candidate
+# image ref/digest are reported separately, inline, by build-image-
+# candidate itself the moment it succeeds (see gitops-build-image-candidate's
+# notify-built step) -- decoupled from this pipeline-completion signal.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-notify-build-status
+  namespace: gitops-image-builds
+  labels:
+    gitops-platform.io/stage: notify
+spec:
+  params:
+    - name: pipeline-run-id
+      type: string
+    - name: operator-api-url
+      type: string
+    - name: pipeline-status
+      type: string
+      default: "Unknown"
+  steps:
+    - name: notify
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: OPERATOR_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gitops-operator-token
+              key: operatorApiToken
+      script: |
+        #!/usr/bin/env python3
+        import urllib.request, json, os
+
+        token = os.environ.get("OPERATOR_API_TOKEN", "")
+        payload = json.dumps({
+            "status": "$(params.pipeline-status)",
+        }).encode()
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            req = urllib.request.Request(
+                "$(params.operator-api-url)/api/v1/pipelines/$(params.pipeline-run-id)/build-status",
+                data=payload,
+                headers=headers,
+                method="POST")
+            urllib.request.urlopen(req, timeout=10)
+        except Exception as e:
+            print(f"Build-status notify failed: {e}")
+
+# Source: platform/tekton/tasks/build/notify-status-task.yaml
 ---
 # "" Notify Status (finally task) """"""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -4420,7 +4798,7 @@ spec:
         except Exception as e:
             print(f"Status notify failed: {e}")
 
-# Source: platform/tekton/tasks/build\pre-build-task.yaml
+# Source: platform/tekton/tasks/build/pre-build-task.yaml
 ---
 # "" Build image locally -- NO push """""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -4637,7 +5015,115 @@ spec:
         print(f"\nAll {len(found)} COPY source(s) verified OK")
 
 
-# Source: platform/tekton/tasks/build\scan-grype-task.yaml
+# Source: platform/tekton/tasks/build/scan-grype-remote-task.yaml
+---
+# "" Grype -- scans a remote candidate image by reference """
+# Opt-in variant used when values.yaml imageBuildIsolation.enabled=true.
+# gitops-scan-grype (local tar) is untouched.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-scan-grype-remote
+  namespace: tekton-pipelines
+  labels:
+    gitops-platform.io/stage: image-scan
+spec:
+  description: "Grype image scan on a remote candidate image reference. Apache 2.0. No token."
+  params:
+    - name: image-ref
+      type: string
+      description: "Full candidate image reference to pull and scan"
+  workspaces:
+    - name: registry-credentials
+    - name: results
+    - name: vulndb-cache
+  results:
+    - name: CRITICAL_COUNT
+    - name: HIGH_COUNT
+  steps:
+    - name: setup
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        mkdir -p $(workspaces.results.path)/image-scan
+        mkdir -p $(workspaces.vulndb-cache.path)/grype/tmp $(workspaces.vulndb-cache.path)/grype/db
+        echo "-- Grype image scan (remote) --"
+        echo "  Image : $(params.image-ref)"
+
+    - name: grype-scan
+      image: k8secops/k8secops:grype-v0.80.0
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "200m", memory: "512Mi"}
+        limits:   {cpu: "1000m", memory: "2Gi"}
+      env:
+        - name: HOME
+          value: "$(workspaces.vulndb-cache.path)/grype"
+        - name: TMPDIR
+          value: "$(workspaces.vulndb-cache.path)/grype/tmp"
+        - name: GRYPE_DB_AUTO_UPDATE
+          value: "true"
+        - name: GRYPE_DB_VALIDATE_AGE
+          value: "false"
+        - name: GRYPE_DB_CACHE_DIR
+          value: "$(workspaces.vulndb-cache.path)/grype/db"
+        - name: DOCKER_CONFIG
+          value: "$(workspaces.registry-credentials.path)"
+      # anchore/grype:latest is distroless -- binary is at /grype, not on PATH
+      command: ["/grype"]
+      args:
+        - "registry:$(params.image-ref)"
+        - "--output"
+        - "json"
+        - "--file"
+        - "$(workspaces.results.path)/image-scan/grype.json"
+        - "--add-cpes-if-none"
+        - "--quiet"
+
+    - name: parse
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/usr/bin/env python3
+        import json, pathlib
+        counts = {"Critical": 0, "High": 0}
+        try:
+            d = json.loads(pathlib.Path("$(workspaces.results.path)/image-scan/grype.json").read_text())
+            for m in d.get("matches", []):
+                sev = m.get("vulnerability", {}).get("severity", "Unknown")
+                counts[sev] = counts.get(sev, 0) + 1
+        except Exception as e:
+            print(f"Parse warning: {e}")
+        pathlib.Path("$(results.CRITICAL_COUNT.path)").write_text(str(counts["Critical"]))
+        pathlib.Path("$(results.HIGH_COUNT.path)").write_text(str(counts["High"]))
+        print(f"Grype result -- Critical={counts['Critical']} High={counts['High']}")
+
+# Source: platform/tekton/tasks/build/scan-grype-task.yaml
 ---
 # "" Grype -- scans local tar """""""""""""""""""""""""""""""
 # anchore/grype:latest is distroless (no /bin/sh) -- cannot use script:.
@@ -4753,7 +5239,100 @@ spec:
         print(f"Report: image-scan/grype.json  ({size_kb} KB, {total} matches)")
 
 
-# Source: platform/tekton/tasks/build\scan-syft-task.yaml
+# Source: platform/tekton/tasks/build/scan-syft-remote-task.yaml
+---
+# "" Syft -- SBOM generation from a remote candidate image reference "
+# Opt-in variant used when values.yaml imageBuildIsolation.enabled=true.
+# gitops-scan-syft (local tar) is untouched.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-scan-syft-remote
+  namespace: tekton-pipelines
+  labels:
+    gitops-platform.io/stage: sbom
+spec:
+  description: "Syft SBOM generation (CycloneDX) on a remote candidate image reference. Apache 2.0. No token."
+  params:
+    - name: image-ref
+      type: string
+      description: "Full candidate image reference to pull and scan"
+  workspaces:
+    - name: registry-credentials
+    - name: results
+  results:
+    - name: PACKAGE_COUNT
+  steps:
+    - name: setup
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        mkdir -p $(workspaces.results.path)/sbom $(workspaces.results.path)/.syft-cache
+        echo "-- Syft SBOM generation (remote) --"
+        echo "  Image : $(params.image-ref)"
+
+    - name: syft-scan
+      image: k8secops/k8secops:syft-v1.9.0
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "200m", memory: "512Mi"}
+        limits:   {cpu: "1000m", memory: "1Gi"}
+      env:
+        - name: HOME
+          value: "$(workspaces.results.path)/.syft-cache"
+        - name: TMPDIR
+          value: "$(workspaces.results.path)/.syft-cache"
+        - name: DOCKER_CONFIG
+          value: "$(workspaces.registry-credentials.path)"
+      # anchore/syft:latest is distroless -- binary is at /syft, not on PATH
+      command: ["/syft"]
+      args:
+        - "registry:$(params.image-ref)"
+        - "-o"
+        - "cyclonedx-json=$(workspaces.results.path)/sbom/sbom.cyclonedx.json"
+        - "-q"
+
+    - name: parse
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/usr/bin/env python3
+        import json, pathlib
+        count = 0
+        try:
+            d = json.loads(pathlib.Path("$(workspaces.results.path)/sbom/sbom.cyclonedx.json").read_text())
+            count = len(d.get("components", []))
+        except Exception as e:
+            print(f"Parse warning: {e}")
+        pathlib.Path("$(results.PACKAGE_COUNT.path)").write_text(str(count))
+        print(f"Syft SBOM -- {count} components")
+
+# Source: platform/tekton/tasks/build/scan-syft-task.yaml
 ---
 # "" Syft -- SBOM generation from local tar """""""""""""""""
 # anchore/syft:latest is distroless (no /bin/sh) -- cannot use script:.
@@ -4853,7 +5432,92 @@ spec:
         print(f"Report: sbom/sbom.cyclonedx.json  ({size_kb} KB, {count} components)")
 
 
-# Source: platform/tekton/tasks/build\scan-trivy-task.yaml
+# Source: platform/tekton/tasks/build/scan-trivy-remote-task.yaml
+---
+# "" Trivy -- scans a remote candidate image by reference """
+# Opt-in variant used when values.yaml imageBuildIsolation.enabled=true --
+# the image was built+pushed in a separate namespace (no local image-tar
+# workspace exists in this pipeline), so this scans the registry-pushed
+# candidate directly instead. gitops-scan-trivy (local tar) is untouched.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-scan-trivy-remote
+  namespace: tekton-pipelines
+  labels:
+    gitops-platform.io/stage: image-scan
+spec:
+  description: "Trivy image scan on a remote candidate image reference. Apache 2.0."
+  params:
+    - name: severity
+      default: "CRITICAL,HIGH,MEDIUM"
+    - name: image-ref
+      type: string
+      description: "Full candidate image reference to pull and scan"
+  workspaces:
+    - name: registry-credentials
+    - name: results
+    - name: vulndb-cache
+  results:
+    - name: CRITICAL_COUNT
+    - name: HIGH_COUNT
+    - name: MEDIUM_COUNT
+  steps:
+    - name: trivy
+      image: k8secops/k8secops:trivy-0.54.1
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "200m", memory: "512Mi"}
+        limits:   {cpu: "1000m", memory: "2Gi"}
+      env:
+        - name: TRIVY_CACHE_DIR
+          value: "$(workspaces.vulndb-cache.path)/trivy"
+        - name: DOCKER_CONFIG
+          value: "$(workspaces.registry-credentials.path)"
+      script: |
+        #!/bin/sh
+        mkdir -p $(workspaces.results.path)/image-scan "$TRIVY_CACHE_DIR"
+        IMAGE_REF="$(params.image-ref)"
+
+        echo "-- Trivy image scan (remote) --"
+        echo "  Image : $IMAGE_REF"
+        echo "  Rules : $(params.severity)"
+        echo ""
+
+        trivy image \
+          "$IMAGE_REF" \
+          --format sarif \
+          --output $(workspaces.results.path)/image-scan/trivy.sarif \
+          --scanners vuln,secret,misconfig,license \
+          --severity "$(params.severity)" \
+          --exit-code 0 2>/dev/null || true
+
+        trivy image \
+          "$IMAGE_REF" \
+          --format json \
+          --output $(workspaces.results.path)/image-scan/trivy.json \
+          --scanners vuln,secret,misconfig,license \
+          --exit-code 0 2>/dev/null || true
+
+        JSON="$(workspaces.results.path)/image-scan/trivy.json"
+        CRITICAL=$(grep -o '"Severity":"CRITICAL"' "$JSON" 2>/dev/null | wc -l | tr -d ' ')
+        HIGH=$(grep -o '"Severity":"HIGH"' "$JSON" 2>/dev/null | wc -l | tr -d ' ')
+        MEDIUM=$(grep -o '"Severity":"MEDIUM"' "$JSON" 2>/dev/null | wc -l | tr -d ' ')
+        CRITICAL=${CRITICAL:-0}; HIGH=${HIGH:-0}; MEDIUM=${MEDIUM:-0}
+        printf '%s' "$CRITICAL" > $(results.CRITICAL_COUNT.path)
+        printf '%s' "$HIGH"     > $(results.HIGH_COUNT.path)
+        printf '%s' "$MEDIUM"   > $(results.MEDIUM_COUNT.path)
+        echo "Trivy result -- CRITICAL=$CRITICAL HIGH=$HIGH MEDIUM=$MEDIUM"
+
+# Source: platform/tekton/tasks/build/scan-trivy-task.yaml
 ---
 # "" Trivy -- scans local tar """""""""""""""""""""""""""""""
 apiVersion: tekton.dev/v1
@@ -4939,7 +5603,138 @@ spec:
         echo "Report: image-scan/trivy.json  ($SIZE, C=$CRITICAL H=$HIGH M=$MEDIUM)"
 
 
-# Source: platform/tekton/tasks/ai\ai-aggregate.yaml
+# Source: platform/tekton/tasks/build/wait-for-remote-build-task.yaml
+---
+# "" Wait For Remote Build (isolation opt-in) """""""""""""""
+# Replaces pre-build/hadolint/build-image-local in the main pipeline when
+# values.yaml imageBuildIsolation.enabled=true. Triggers the isolated build
+# namespace's own PipelineRun (via the operator, which re-clones+recompiles
+# there and runs Kaniko with elevated privilege in a separate, tightly-RBAC'd
+# namespace) and polls for its result -- same POST-then-poll shape as
+# gitops-human-gate, just unattended (no human decision involved).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-wait-for-remote-build
+  namespace: tekton-pipelines
+  labels:
+    gitops-platform.io/stage: build
+spec:
+  description: |
+    Triggers the isolated build namespace's PipelineRun and polls the
+    operator for its result. Timeout: 2h (build+compile+Kaniko, no human
+    involved -- much shorter than the 24h human-gate timeout).
+  params:
+    - name: app-name
+      type: string
+    - name: git-commit-sha
+      type: string
+    - name: image-tag
+      type: string
+    - name: build-file
+      type: string
+    - name: build-context
+      type: string
+    - name: dockerfile-path
+      type: string
+    - name: pipeline-run-id
+      type: string
+    - name: operator-api-url
+      type: string
+  results:
+    - name: CANDIDATE_IMAGE_REF
+    - name: CANDIDATE_IMAGE_DIGEST
+  steps:
+    - name: wait-for-build
+      image: k8secops/k8secops:python-3.12-slim
+      timeout: "2h"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: OPERATOR_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gitops-operator-token
+              key: operatorApiToken
+      script: |
+        #!/usr/bin/env python3
+        import urllib.request, json, time, sys, os
+
+        sys.stdout.reconfigure(line_buffering=True)
+
+        run_id      = "$(params.pipeline-run-id)"
+        api_url     = "$(params.operator-api-url)"
+        trigger_url = f"{api_url}/api/v1/pipelines/{run_id}/trigger-build"
+        poll_url    = f"{api_url}/api/v1/pipelines/{run_id}/build-status"
+        token       = os.environ.get("OPERATOR_API_TOKEN", "")
+        auth_header = {"Authorization": f"Bearer {token}"} if token else {}
+
+        payload = json.dumps({
+            "commitSha":      "$(params.git-commit-sha)",
+            "imageTag":        "$(params.image-tag)",
+            "buildFile":       "$(params.build-file)",
+            "buildContext":    "$(params.build-context)",
+            "dockerfilePath":  "$(params.dockerfile-path)",
+        }).encode()
+
+        for attempt in range(1, 7):
+            try:
+                req = urllib.request.Request(
+                    trigger_url, data=payload,
+                    headers={"Content-Type": "application/json", **auth_header},
+                    method="POST")
+                urllib.request.urlopen(req, timeout=15)
+                print(f"Remote build triggered (attempt {attempt}) for run {run_id}")
+                break
+            except Exception as e:
+                wait = attempt * 10
+                print(f"Trigger-build attempt {attempt} failed: {e} -- retrying in {wait}s")
+                if attempt < 6:
+                    time.sleep(wait)
+                else:
+                    print("Trigger-build failed after 6 attempts -- aborting")
+                    sys.exit(1)
+
+        # Poll every 10 seconds for up to 2 hours
+        polls = 0
+        max_polls = 2 * 60 * 6  # 2h -- 60min -- 6 polls/min
+
+        while polls < max_polls:
+            try:
+                poll_req = urllib.request.Request(poll_url, headers=auth_header)
+                resp = urllib.request.urlopen(poll_req, timeout=10)
+                data = json.loads(resp.read())
+                status = data.get("status", "").upper()
+
+                if status == "SUCCEEDED":
+                    ref    = data.get("candidateImageRef", "")
+                    digest = data.get("candidateImageDigest", "")
+                    open("$(results.CANDIDATE_IMAGE_REF.path)", "w").write(ref)
+                    open("$(results.CANDIDATE_IMAGE_DIGEST.path)", "w").write(digest)
+                    print(f"Remote build succeeded: {ref}@{digest}")
+                    sys.exit(0)
+
+                elif status == "FAILED":
+                    print("Remote build failed -- stopping pipeline")
+                    sys.exit(1)
+
+            except Exception as e:
+                if polls % 30 == 0:
+                    print(f"Still waiting for remote build... ({polls * 10 // 60} min elapsed)")
+            time.sleep(10)
+            polls += 1
+
+        print("Remote build timed out after 2h -- stopping pipeline")
+        sys.exit(1)
+
+# Source: platform/tekton/tasks/ai/ai-aggregate.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -5466,7 +6261,7 @@ spec:
         print(f"Aggregate complete: riskGrade={risk_grade} verdict={verdict}")
         print(f"Recommendation: {rec}")
 
-# Source: platform/tekton/tasks/ai\ai-analyze-image.yaml
+# Source: platform/tekton/tasks/ai/ai-analyze-image.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -5724,7 +6519,7 @@ spec:
         (OUT_DIR / "image.json").write_text(json.dumps(result, indent=2))
         print(f"Image analysis written: verdict={result['verdict']}, findings={len(result['findings'])}")
 
-# Source: platform/tekton/tasks/ai\ai-analyze-sast.yaml
+# Source: platform/tekton/tasks/ai/ai-analyze-sast.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -6019,7 +6814,7 @@ spec:
         (OUT_DIR / "sast.json").write_text(json.dumps(result, indent=2))
         print(f"SAST analysis written: verdict={result['verdict']}, findings={len(result['findings'])}")
 
-# Source: platform/tekton/tasks/ai\ai-analyze-sca.yaml
+# Source: platform/tekton/tasks/ai/ai-analyze-sca.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -6298,7 +7093,7 @@ spec:
         (OUT_DIR / 'sca.json').write_text(json.dumps(result, indent=2))
         print('SCA analysis written: verdict=' + result['verdict'] + ', findings=' + str(len(result['findings'])))
 
-# Source: platform/tekton/tasks/ai\ai-analyze-secrets.yaml
+# Source: platform/tekton/tasks/ai/ai-analyze-secrets.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -6564,7 +7359,7 @@ spec:
         (OUT_DIR / "secrets.json").write_text(json.dumps(result, indent=2))
         print(f"Secrets analysis written: verdict={result['verdict']}, findings={len(result['findings'])}")
 
-# Source: platform/tekton/tasks/ai\ai-analyze-tests.yaml
+# Source: platform/tekton/tasks/ai/ai-analyze-tests.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -6930,7 +7725,7 @@ spec:
         (OUT_DIR / "tests.json").write_text(json.dumps(result, indent=2))
         print(f"Tests analysis written: verdict={result['verdict']} root_cause={root_cause} tests_ran={tests_ran}")
 
-# Source: platform/tekton/tasks/ai\ai-preflight.yaml
+# Source: platform/tekton/tasks/ai/ai-preflight.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
