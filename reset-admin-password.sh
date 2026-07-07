@@ -21,7 +21,7 @@ set -euo pipefail
 NS_CORE="gitops-db"
 NS_OPERATOR="gitops-core"
 DB_NAME="gitops_platform"
-DB_USER="postgres"
+DB_USER="gitops"   # matches POSTGRES_USER in helm/gitops-platform/templates/db/secret.yaml -- fixed, not customer-configurable (internal DB mode only)
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()    { echo -e "${GREEN}[INFO]${NC}  $*"; }
@@ -101,8 +101,8 @@ fi
 info "Using pod: ${DB_POD}"
 
 ROWS=$(kubectl exec -n gitops-db "${DB_POD}" -- \
-  psql -U "${DB_USER}" -d "${DB_NAME}" -tAc \
-  "UPDATE users SET pwd_hash = '${NEW_HASH}', updated_at = NOW() \
+  psql -qtA -U "${DB_USER}" -d "${DB_NAME}" -c \
+  "UPDATE platform_users SET pwd_hash = '${NEW_HASH}' \
    WHERE username = '${TARGET_USER}' RETURNING username;")
 
 if [[ "$ROWS" == "$TARGET_USER" ]]; then
@@ -111,7 +111,7 @@ else
   echo -e "${RED}[ERROR]${NC} User '${TARGET_USER}' not found in the database." >&2
   echo "  Available users:"
   kubectl exec -n gitops-db "${DB_POD}" -- \
-    psql -U "${DB_USER}" -d "${DB_NAME}" -tAc "SELECT username FROM users;"
+    psql -U "${DB_USER}" -d "${DB_NAME}" -tAc "SELECT username FROM platform_users;"
   exit 1
 fi
 
