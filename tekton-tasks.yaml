@@ -2933,6 +2933,19 @@ spec:
 
         echo """ .NET compile: SDK=$(params.build-version) """
         [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
+        # Trust a customer's private artifact-repo CA, if declared (secret-manager
+        # credential named CUSTOM_CA_CERT, Stage=Build, Secure file). .NET on Linux
+        # is OpenSSL-backed and respects SSL_CERT_FILE as the complete trust bundle,
+        # so append rather than replace -- otherwise public NuGet.org would break.
+        if [ -n "$CUSTOM_CA_CERT_FILE" ]; then
+          COMBINED_CA="$HOME/.combined-ca-bundle.pem"
+          cat /etc/ssl/certs/ca-certificates.crt "$CUSTOM_CA_CERT_FILE" > "$COMBINED_CA" 2>/dev/null \
+            || cp "$CUSTOM_CA_CERT_FILE" "$COMBINED_CA"
+          export SSL_CERT_FILE="$COMBINED_CA"
+          echo "Trusting custom CA for private NuGet feed: $CUSTOM_CA_CERT_FILE"
+        fi
+
         dotnet --version
 
         # Produces the final, deployable publish output here, in the compile
@@ -3122,6 +3135,18 @@ spec:
 
         [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
 
+        # Trust a customer's private artifact-repo CA, if declared (secret-manager
+        # credential named CUSTOM_CA_CERT, Stage=Build, Secure file). Go respects
+        # SSL_CERT_FILE as the complete trust bundle, so append rather than
+        # replace -- otherwise the public Go module proxy would break.
+        if [ -n "$CUSTOM_CA_CERT_FILE" ]; then
+          COMBINED_CA="$HOME/.combined-ca-bundle.pem"
+          cat /etc/ssl/certs/ca-certificates.crt "$CUSTOM_CA_CERT_FILE" > "$COMBINED_CA" 2>/dev/null \
+            || cp "$CUSTOM_CA_CERT_FILE" "$COMBINED_CA"
+          export SSL_CERT_FILE="$COMBINED_CA"
+          echo "Trusting custom CA for private Go module proxy: $CUSTOM_CA_CERT_FILE"
+        fi
+
         mkdir -p "$GOPATH/pkg/mod" "$GOCACHE"
 
         go mod download
@@ -3304,6 +3329,21 @@ spec:
         echo """ Java compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
 
         [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
+        # Trust a customer's private artifact-repo CA, if declared (secret-manager
+        # credential named CUSTOM_CA_CERT, Stage=Build, Secure file). The JDK's
+        # own cacerts is copied (not replaced) before importing, so Maven
+        # Central/the Gradle Plugin Portal keep working alongside the private repo.
+        if [ -n "$CUSTOM_CA_CERT_FILE" ]; then
+          CUSTOM_TRUSTSTORE="$HOME/.custom-truststore.jks"
+          cp "$JAVA_HOME/lib/security/cacerts" "$CUSTOM_TRUSTSTORE"
+          keytool -importcert -noprompt -trustcacerts -alias customca \
+            -file "$CUSTOM_CA_CERT_FILE" -keystore "$CUSTOM_TRUSTSTORE" -storepass changeit
+          TRUST_OPTS="-Djavax.net.ssl.trustStore=$CUSTOM_TRUSTSTORE -Djavax.net.ssl.trustStorePassword=changeit"
+          export MAVEN_OPTS="$MAVEN_OPTS $TRUST_OPTS"
+          export GRADLE_OPTS="$GRADLE_OPTS $TRUST_OPTS"
+          echo "Trusting custom CA for private Maven/Gradle repo: $CUSTOM_CA_CERT_FILE"
+        fi
 
         mkdir -p "$HOME/.m2" "$GRADLE_USER_HOME"
 
@@ -3491,6 +3531,14 @@ spec:
 
         [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
 
+        # Trust a customer's private artifact-repo CA, if declared (secret-manager
+        # credential named CUSTOM_CA_CERT, Stage=Build, Secure file). Node.js
+        # natively reads NODE_EXTRA_CA_CERTS -- no file copy needed.
+        if [ -n "$CUSTOM_CA_CERT_FILE" ]; then
+          export NODE_EXTRA_CA_CERTS="$CUSTOM_CA_CERT_FILE"
+          echo "Trusting custom CA for private npm registry: $CUSTOM_CA_CERT_FILE"
+        fi
+
         mkdir -p "$HOME"
 
         # Use npm-cache PVC when bound, otherwise fall back to source workspace
@@ -3664,6 +3712,16 @@ spec:
         mkdir -p "$HOME"
         [ -f "$HOME/.pip-extra-creds.env" ] && . "$HOME/.pip-extra-creds.env"
         [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
+        # Trust a customer's private artifact-repo CA, if declared (secret-manager
+        # credential named CUSTOM_CA_CERT, Stage=Build, Secure file -- see
+        # extra_credentials.html). Both env vars are natively read by pip/requests,
+        # no file copy or system trust-store mutation needed.
+        if [ -n "$CUSTOM_CA_CERT_FILE" ]; then
+          export REQUESTS_CA_BUNDLE="$CUSTOM_CA_CERT_FILE"
+          export PIP_CERT="$CUSTOM_CA_CERT_FILE"
+          echo "Trusting custom CA for private package index: $CUSTOM_CA_CERT_FILE"
+        fi
 
         # Always upgrade pip first -- avoids version notice noise and ensures
         # consistent behaviour across base images that ship older pip versions
@@ -4780,6 +4838,130 @@ spec:
             sys.exit(1)
         print(f"\nAll {len(found)} COPY source(s) verified OK")
 
+
+# Source: platform/tekton/tasks/build/precompile-task.yaml
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-precompile
+  namespace: tekton-pipelines
+  labels:
+    gitops-platform.io/stage: precompile
+spec:
+  description: >
+    Runs a customer-supplied script (committed to their own repo) before
+    compile -- the customer's script handles its own tool installation
+    (e.g. downloading a cloud CLI to pull files from S3/GCS/Blob storage,
+    sed-substituting config placeholders, anything). Generic across every
+    language -- unlike compile, there's no language-specific build tool
+    involved, just "run this script." A failure here blocks compile from
+    ever starting (no onError:continue) since it's a prerequisite the
+    build depends on, not an optional/advisory step.
+  params:
+    - name: precompile-script
+      description: "Path to the script (relative to build-context) to execute. Required -- this task is only included in the Pipeline when set."
+    - name: precompile-image
+      default: "k8secops/k8secops:python-3.12-slim"
+      description: "Image to run the script in. Defaults to the same lightweight image every language's materialize-build-creds step already uses (Python+pip available for pip-installable cloud CLIs like awscli) -- override for anything heavier."
+    - name: build-context
+      default: "."
+      description: "Same convention as compile -- the script's workingDir, so relative paths behave like the build itself."
+  workspaces:
+    - name: source
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none. This is how a customer delivers cloud credentials (AWS keys, a GCP service-account JSON, etc.) or a private-repo CA cert to this script."
+  steps:
+    # Generic, language-agnostic export loop -- same FILE__ convention every
+    # compile task already uses (see compile-python-task.yaml), trimmed down
+    # to just the secret-manager part (no Maven/npm-registry-specific logic,
+    # not relevant to a general setup script).
+    - name: materialize-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.precompile-home"
+      script: |
+        #!/usr/bin/env python3
+        import pathlib, os
+
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        # FILE__-prefixed keys point {name}_FILE straight at the already-mounted
+        # Secret file -- no copy needed. Plain keys defer-read their value via
+        # $(cat '<path>') at SOURCE time so the value never passes through this
+        # script's shell quoting/escaping, only the platform-controlled path does.
+        svc_lines: list[str] = []
+        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
+                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+        else:
+            print("No secret-manager credentials declared for this app -- skipping")
+
+    - name: run-precompile-script
+      image: $(params.precompile-image)
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)/$(params.build-context)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.precompile-home"
+      computeResources:
+        requests: {cpu: "200m", memory: "256Mi"}
+        limits:   {cpu: "1000m", memory: "1Gi"}
+      script: |
+        #!/bin/sh
+        set -e
+        SCRIPT="$(params.precompile-script)"
+        echo """ Running precompile script: $SCRIPT (image: $(params.precompile-image)) """
+
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
+        if [ ! -f "$SCRIPT" ]; then
+          echo "Precompile script not found at '$SCRIPT' (relative to build-context '$(params.build-context)')" >&2
+          exit 1
+        fi
+
+        chmod +x "$SCRIPT" 2>/dev/null || true
+        case "$SCRIPT" in
+          /*|./*) EXEC="$SCRIPT" ;;
+          *)      EXEC="./$SCRIPT" ;;
+        esac
+        "$EXEC"
+        echo """ Precompile script completed """
 
 # Source: platform/tekton/tasks/build/scan-grype-remote-task.yaml
 ---
@@ -5926,6 +6108,17 @@ spec:
             "imageSigned": False,
         }
 
+        # Full SBOM, kept separate from the lightweight supply_chain status summary
+        # above -- the raw CycloneDX JSON is what makes it downloadable/queryable
+        # after this run's workspace is gone (previously only the component count
+        # ever left the pipeline).
+        sbom = {
+            "generated": img_cat.get("sbom_generated", False),
+            "componentCount": img_cat.get("sbom_components", 0),
+            "components": img_cat.get("sbom_component_list", []),
+            "raw": img_cat.get("sbom_raw", ""),
+        }
+
         #  Secret-injection-ladder posture (derived from secrets/sast rung fields)
         # No extra AI call -- secrets/sast sub-tasks already tagged findings with a
         # rung (see config-secret-injection-patterns ladder: 0=hard-coded ... 7=sidecar
@@ -6006,6 +6199,7 @@ spec:
             "categoryBreakdown":      category_breakdown,
             "toolBreakdown":          tool_breakdown,
             "supplyChain":            supply_chain,
+            "sbom":                   sbom,
             "secretPosture":          secret_posture,
             "pipelineFailureAnalysis": pfa,
             "categoryAnalysis":       category_analysis,
@@ -6169,12 +6363,27 @@ spec:
                 print(f"Hadolint parse: {e}")
 
         # "" SBOM """"""""""""""""""""""""""""""""""""""""""""""
+        # Full CycloneDX JSON is kept (sbom_raw) so it survives past this pod's
+        # workspace -- previously only the component COUNT reached the AI report,
+        # leaving no way to ever download or query the actual SBOM after the run
+        # finished. Component list is also extracted separately (compact form) so
+        # chat context doesn't need to parse the full raw JSON just to answer
+        # "what's in the SBOM".
         sbom_path = SCAN_DIR / "sbom" / "sbom.cyclonedx.json"
         sbom_generated = sbom_path.exists() and sbom_path.stat().st_size > 0
         sbom_components = 0
+        sbom_component_list = []
+        sbom_raw = ""
         if sbom_generated:
             try:
-                sbom_components = len(json.loads(sbom_path.read_text()).get("components", []))
+                sbom_raw = sbom_path.read_text()
+                sbom_doc = json.loads(sbom_raw)
+                all_components = sbom_doc.get("components", [])
+                sbom_components = len(all_components)
+                sbom_component_list = [
+                    {"name": c.get("name", ""), "version": c.get("version", ""), "type": c.get("type", "")}
+                    for c in all_components[:300]
+                ]
             except: pass
 
         SEV_ORDER = {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"INFO":4,"UNKNOWN":5}
@@ -6324,6 +6533,8 @@ spec:
             "summary": summary,
             "sbom_generated": sbom_generated,
             "sbom_components": sbom_components,
+            "sbom_component_list": sbom_component_list,
+            "sbom_raw": sbom_raw,
         }
 
         (OUT_DIR / "image.json").write_text(json.dumps(result, indent=2))
