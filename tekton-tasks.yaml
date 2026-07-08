@@ -5736,17 +5736,32 @@ spec:
         # Static rules/schema text lives in ai/prompts/aggregate-rules.txt --
         # kept out of this script to stay under the repo's 250-line convention.
         AGGREGATE_RULES = textwrap.dedent("""
+        Your value here is specifically CROSS-CATEGORY synthesis -- something no
+        single scanner or category summary can produce, since each ran in isolation.
+        Look across all 5 category summaries for compounding risk: e.g. a leaked
+        credential (secrets) for a service also reachable via an injection flaw
+        (sast), or a vulnerable deserialization library (sca) in a component that
+        also fails input validation (sast). If you see a real connection like that,
+        say it explicitly -- it's the single most useful thing you can tell the
+        reader, because it's not visible from any one category alone. If categories
+        are genuinely unrelated, don't force a connection that isn't there.
+
         Respond with JSON only:
         {"recommendation":"Begin with one of: I recommend proceeding / I recommend proceeding with caution / I do not recommend proceeding. Then 2-4 sentences citing the most critical category findings by name.","executive_summary":"2-4 sentences for an engineering manager  overall posture, key risks, what must be fixed before release.","pipeline_failure_analysis":{"stage":"","root_cause":"","recommended_fix":""}} or set pipeline_failure_analysis to null if no pipeline failures.
 
         Rules:
         - If tests_ran=false and root_cause=compile_error: the recommendation MUST state tests did not run due to a build failure.
         - Cite specific categories (e.g. 'secrets scan found a verified credential') not generic phrases.
+        - Do not just concatenate the category summaries you were given -- if your recommendation could be produced by pasting the summaries together, you haven't added anything. Prioritize: say what actually matters most and why, not everything.
         - pipeline_failure_analysis: diagnose only if PIPELINE FAILURES are listed. Focus on the root cause, not cascaded failures.
         - Respond with valid JSON only, no markdown.
         """).strip()
         prompt = (
-            "You are a senior security engineer synthesising findings from 5 parallel security analyses.\n\n"
+            "You are a principal application security engineer with 15+ years of experience, the person "
+            "an engineering org brings in to make the final ship/no-ship call on a release. You're "
+            "synthesising 5 parallel security analyses (secrets, SAST, SCA, image, tests) that each ran in "
+            "isolation -- your job is judgment and cross-category correlation that none of them could see "
+            "alone, not a recap of what they already said individually.\n\n"
             f"Application: $(params.app-name)\n"
             f"Language: $(params.language)\n"
             f"Commit: $(params.git-commit-sha)\n\n"
@@ -5811,6 +5826,7 @@ spec:
         recommendation      = ""
         executive_summary   = ""
         pfa                 = None
+        aggregate_ai_used   = False
 
         raw = call_ai(prompt)
         if raw:
@@ -5820,6 +5836,7 @@ spec:
                 parsed = json.loads(raw.strip())
                 recommendation    = parsed.get("recommendation", "")
                 executive_summary = parsed.get("executive_summary", "")
+                aggregate_ai_used = bool(recommendation or executive_summary)
                 pfa_raw           = parsed.get("pipeline_failure_analysis")
                 if pfa_raw and isinstance(pfa_raw, dict):
                     pfa = {"stage": pfa_raw.get("stage",""),
@@ -5977,6 +5994,7 @@ spec:
             "aiProvider": AI_PROVIDER,
             "recommendation":         recommendation,
             "executiveSummary":       executive_summary,
+            "aiGenerated":            aggregate_ai_used,
             "findings":               all_ai_findings[:30],
             "allFindings":            all_findings_minimal,
             "testAnalysis":           tests_cat.get("test_analysis", []),
@@ -6220,8 +6238,27 @@ spec:
         # Static rules/schema text lives in ai/prompts/image-rules.txt --
         # kept out of this script to stay under the repo's 250-line convention.
         IMAGE_RULES = textwrap.dedent("""
+        Your job is to add analysis a raw CVE list does not already give the reader --
+        not to restate it. "Package X has CVE-Y" is already visible in the scan
+        output; only write it again as context for something you're adding, never as
+        the whole sentence.
+
+        - fix_description must cite the ACTUAL fix_version from the data ("Upgrade
+          base image package to 1.2.4") -- never a generic "upgrade to fix version".
+          If fix_version is empty, say there's no published fix yet and suggest a
+          compensating control (pin a different base image, add a runtime mitigation)
+          instead of inventing a version.
+        - If multiple CVEs trace back to the same base-image package (common with
+          Trivy/Grype on OS packages), group them and say one base-image bump fixes
+          all of them -- don't repeat the same fix per CVE.
+        - Distinguish OS-package CVEs (fixed by rebuilding on a newer base image) from
+          application-dependency CVEs (fixed by a language-package-manager upgrade) --
+          the fix path is different and the reader needs to know which.
+        - Deduplicate: if both Trivy and Grype flagged the same CVE on the same
+          package, merge into one finding.
+
         Respond with JSON only:
-        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","summary":"1-3 sentences on image security posture and supply chain","findings":[{"tool":"","severity":"","title":"","location":"","cve":"exact CVE or empty","fix_version":"min safe version or empty","impact":"","fix_description":"","fix_code":""}]}
+        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","summary":"1-3 sentences on image security posture and supply chain -- lead with what's actually risky","findings":[{"tool":"","severity":"","title":"","location":"","cve":"exact CVE or empty","fix_version":"exact value from data or empty -- never invented","impact":"why THIS finding matters in a running container, or why it likely doesn't","fix_description":"the real fix_version if given, or an honest alternative if not","fix_code":""}]}
 
         Rules: BLOCK if CRITICAL CVE with fix version exists. cve and fix_version must come from the source data -- never invent. Respond with valid JSON only, no markdown.
         """).strip()
@@ -6229,7 +6266,11 @@ spec:
             sbom_note = (f"SBOM: {sbom_components} components catalogued."
                          if sbom_generated else "SBOM: not generated.")
             prompt = (
-                "You are a container image security expert reviewing scan results.\n\n"
+                "You are a senior container and cloud infrastructure security engineer with 12+ years "
+                "of experience hardening production image supply chains -- you distinguish base-image "
+                "OS-package CVEs (fixed by rebuilding on a newer base) from application-dependency CVEs "
+                "(fixed by a package-manager upgrade) reflexively. Review these image scan results with "
+                "that judgment and return a JSON report.\n\n"
                 f"IMAGE FINDINGS ({len(findings)} total, sorted by severity):\n"
                 f"{json.dumps(findings[:30], indent=2)}\n\n"
                 f"SUPPLY CHAIN: {sbom_note}\n\n"
@@ -6241,6 +6282,8 @@ spec:
                 try:
                     parsed = json.loads(raw.strip())
                     ai_findings = parsed.get("findings", [])
+                    for _f in ai_findings:
+                        _f["ai_generated"] = True
                     summary = parsed.get("summary", "")
                 except Exception as e:
                     print(f"AI JSON parse: {e}")
@@ -6269,8 +6312,9 @@ spec:
                  "location": f.get("location",""), "cve": f.get("cve",""),
                  "fix_version": f.get("fix_version",""),
                  "impact": "Vulnerable OS/image component in production container.",
-                 "fix_description": "Rebuild with patched base image or upgraded package.",
-                 "fix_code": ""}
+                 "fix_description": (f"Rebuild with {f['fix_version']} or newer." if f.get("fix_version")
+                                      else "No fixed version in scan data -- check upstream advisory."),
+                 "fix_code": "", "ai_generated": False}
                 for f in findings[:10]
             ],
             "all_raw": [{"tool": f["tool"], "severity": f["severity"], "title": f["title"][:120],
@@ -6516,6 +6560,24 @@ spec:
         # Static rules/schema text lives in ai/prompts/sast-rules.txt --
         # kept out of this script to stay under the repo's 250-line convention.
         SAST_RULES = textwrap.dedent("""
+        Your job is to add analysis a raw scanner list does not already give the
+        reader. "Tool X flagged rule Y at file:line Z" is already visible in the scan
+        output -- restating it adds nothing. For each finding:
+
+        - impact must state the concrete consequence if this specific pattern reaches
+          production (what an attacker does with it), not a generic "security
+          weakness" sentence.
+        - fix_description and fix_code must be specific to the actual pattern flagged
+          (the exact API/library/construct named in the finding), not "review the
+          flagged code and apply secure coding pattern" -- that sentence is banned,
+          it could apply to literally any finding and tells the reader nothing.
+        - Deduplicate: if multiple tools (semgrep/bearer/lang-sast/sonarqube/checkov)
+          flag the same file:line or the same underlying pattern in nearby lines,
+          merge into one finding rather than repeating it per tool.
+        - If several findings share the same root cause (e.g. the same unsafe helper
+          function called from 5 places), say so and note that fixing the helper
+          fixes all call sites, instead of writing 5 near-identical entries.
+
         For findings that are specifically about HOW A SECRET/CREDENTIAL IS WIRED (e.g. a Checkov rule on a literal `value:` instead of `valueFrom.secretKeyRef` in a K8s manifest, a hardcoded credential default, missing CSI/ExternalSecret/Vault-Agent annotations), also classify which rung of the secret-injection-maturity ladder it represents and set rung/rung_label. Leave rung null for findings unrelated to secret handling (injection, auth bypass, XSS, etc).
           0 = hard-coded literal in source
           2 = K8s/Helm manifest committed to git rendering a secret value
@@ -6523,14 +6585,17 @@ spec:
           5 = mounted-file pattern present but not backed by tmpfs/CSI rotation
 
         Respond with JSON only:
-        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","summary":"1-3 sentences on the SAST posture","findings":[{"tool":"","severity":"","title":"","location":"","cve":"","fix_version":"","impact":"","fix_description":"","fix_code":"","rung":null,"rung_label":""}]}
+        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","summary":"1-3 sentences on the SAST posture -- lead with what's actually exploitable, not a count","findings":[{"tool":"","severity":"","title":"","location":"","cve":"","fix_version":"","impact":"the concrete consequence, specific to this pattern","fix_description":"specific to the actual code construct flagged","fix_code":"","rung":null,"rung_label":""}]}
 
         Rules: BLOCK if injection, auth bypass, or RCE found at HIGH or CRITICAL. fix_code must be an exact corrected code snippet. Respond with valid JSON only, no markdown.
         """).strip()
         if findings:
             prompt = (
-                f"You are a static analysis expert reviewing {LANGUAGE} code. "
-                "Analyse these SAST findings and return a JSON report.\n\n"
+                f"You are a senior application security engineer with 12+ years of experience doing "
+                f"manual code review and exploit-proofing for {LANGUAGE} codebases -- the kind of "
+                f"reviewer who reads a SAST hit and immediately knows whether it's really exploitable "
+                f"or just a linter being pedantic. Analyse these SAST findings with that judgment and "
+                f"return a JSON report.\n\n"
                 f"FINDINGS ({len(findings)} total):\n"
                 f"{json.dumps(findings[:30], indent=2)}\n\n"
             ) + SAST_RULES
@@ -6541,6 +6606,8 @@ spec:
                 try:
                     parsed = json.loads(raw.strip())
                     ai_findings = parsed.get("findings", [])
+                    for _f in ai_findings:
+                        _f["ai_generated"] = True
                     summary = parsed.get("summary", "")
                 except Exception as e:
                     print(f"AI JSON parse: {e}")
@@ -6568,7 +6635,7 @@ spec:
                  "location": f.get("location",""), "cve": "", "fix_version": "",
                  "impact": "Security weakness -- exploitable if deployed without fix.",
                  "fix_description": "Review the flagged code and apply secure coding pattern.",
-                 "fix_code": ""}
+                 "fix_code": "", "ai_generated": False}
                 for f in findings[:10]
             ],
             "all_raw": [{"tool": f["tool"], "severity": f["severity"], "title": f["title"][:120],
@@ -6655,7 +6722,44 @@ spec:
         findings = []
         ran = False
 
-        #  OSV-Scanner SARIF 
+        #  OSV-Scanner: fixed-version lookup from the native JSON report
+        # The SARIF conversion (parsed below, for location info) drops fix-version
+        # data entirely -- osv-scanner's native --format json output still has it
+        # (affected[].ranges[].events[].fixed), so cross-reference by vuln ID to
+        # recover it. Without this, every SCA finding's fix_version was always ""
+        # and the AI had no real version to cite -- prompt wording alone can't fix
+        # a missing-data problem.
+        osv_fix_versions: dict[str, str] = {}
+        osv_json = SCAN_DIR / "sca" / "osv.json"
+        if osv_json.exists():
+            try:
+                od = json.loads(osv_json.read_text())
+                for res in od.get("results", []):
+                    for pkg in res.get("packages", []):
+                        for vuln in pkg.get("vulnerabilities", []):
+                            vid = vuln.get("id", "")
+                            if not vid:
+                                continue
+                            fixed_versions = [
+                                event["fixed"]
+                                for affected in vuln.get("affected", [])
+                                for rng in affected.get("ranges", [])
+                                for event in rng.get("events", [])
+                                if "fixed" in event
+                            ]
+                            if fixed_versions:
+                                # Multiple ranges can list different fixed versions
+                                # (e.g. backports) -- take the last, usually the
+                                # latest/most current per OSV's event ordering.
+                                osv_fix_versions[vid] = fixed_versions[-1]
+                            # aliases (e.g. a GHSA id also known by its CVE) share the same fix
+                            for alias in vuln.get("aliases", []):
+                                if fixed_versions:
+                                    osv_fix_versions.setdefault(alias, fixed_versions[-1])
+            except Exception as e:
+                print(f"OSV JSON (fix-version) parse: {e}")
+
+        #  OSV-Scanner SARIF
         osv_sarif = SCAN_DIR / "sca" / "osv.sarif"
         if osv_sarif.exists():
             ran = True
@@ -6678,7 +6782,8 @@ spec:
                         cve = rid if CVE_RE.match(rid) else ""
                         findings.append({"tool": "osv-scanner", "severity": sev,
                             "title": rule.get("shortDescription", {}).get("text", rid)[:120],
-                            "location": loc, "cve": cve, "fix_version": ""})
+                            "location": loc, "cve": cve,
+                            "fix_version": osv_fix_versions.get(rid, "")})
             except Exception as e:
                 print(f"OSV SARIF parse: {e}")
 
@@ -6787,15 +6892,41 @@ spec:
         # Static rules/schema text lives in ai/prompts/sca-rules.txt --
         # kept out of this script to stay under the repo's 250-line convention.
         SCA_RULES = textwrap.dedent("""
-        Respond with JSON only:
-        {verdict:BLOCK|PROCEED_WITH_CAUTION|PROCEED,summary:1-3 sentences on dependency vulnerability posture,findings:[{tool:,severity:,title:,location:,cve:exact CVE ID from data or empty,fix_version:min safe version or empty,impact:,fix_description:Upgrade X from Y to Z,fix_code:}]}
+        Your job is to add analysis a raw CVE list does not already give the reader --
+        not to restate it. Someone can already see "package X has CVE-Y, severity
+        HIGH" from the scan output alone; that sentence has zero value coming from
+        you. For each finding, answer the question a raw scanner cannot: does this
+        specific CVE actually matter here, and why.
 
-        Rules: BLOCK if CRITICAL CVE with a known fix version exists. cve and fix_version must be copied exactly from the source data - never invented. fix_description: Upgrade package to fix_version. Respond with valid JSON only, no markdown.
+        - fix_description must say the ACTUAL fix_version if one was provided in the
+          data ("Upgrade to 4.2.1" not "upgrade to the patched version"). If no
+          fix_version was given, say so plainly ("No fixed version published yet --
+          consider pinning a patched fork or adding a compensating control") instead
+          of inventing one.
+        - If multiple findings share the same root package (e.g. 3 CVEs all against
+          the same log4j version), say that explicitly and note that one upgrade
+          resolves all of them -- do not repeat identical boilerplate per CVE.
+        - Distinguish CVEs that are plausibly reachable from this app's normal
+          operation (network-facing parsing, deserialization, auth libraries) from
+          ones that likely aren't (e.g. a build-time-only tool, a dev dependency) --
+          say which you think this is and why, briefly. You're reasoning from the
+          package/CVE description given, not guessing at code you can't see.
+        - Deduplicate: if two tools (osv-scanner/owasp-dc) reported the same CVE on
+          the same package, merge into one finding rather than emitting it twice.
+
+        Respond with JSON only:
+        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","summary":"1-3 sentences on dependency vulnerability posture -- lead with what's actually risky, not a count","findings":[{"tool":"","severity":"","title":"","location":"","cve":"exact CVE ID from data or empty","fix_version":"exact value from data or empty -- never invented","impact":"why THIS finding matters here, or why it likely doesn't","fix_description":"the real fix_version if given, or an honest alternative if not","fix_code":""}]}
+
+        Rules: BLOCK if a CRITICAL CVE with a known fix version exists. cve and fix_version must be copied exactly from the source data -- never invented. Respond with valid JSON only, no markdown.
         """).strip()
         if findings:
             gap_note = ('COVERAGE GAP: ' + owasp_skip_reason + ' OSV-Scanner results above but OWASP NVD coverage missing.\n\n') if owasp_skip_reason else ''
             prompt = (
-                'You are a software composition analysis expert reviewing dependency vulnerabilities.\n\n'
+                'You are a senior software supply-chain security engineer with 12+ years of experience '
+                'triaging dependency CVEs -- you know from experience that most CVE hits in a scan are '
+                'low real-world risk (unreachable code path, dev-only dependency) and a few are urgent, '
+                'and your job is telling those apart, not repeating the CVE list. Review these dependency '
+                'vulnerabilities with that judgment and return a JSON report.\n\n'
                 'FINDINGS (' + str(len(findings)) + ' CVEs/vulnerabilities, sorted by severity):\n'
                 + json.dumps(findings[:30], indent=2) + '\n\n'
                 + gap_note
@@ -6807,6 +6938,8 @@ spec:
                 try:
                     parsed = json.loads(raw.strip())
                     ai_findings = parsed.get('findings', [])
+                    for _f in ai_findings:
+                        _f['ai_generated'] = True
                     summary = parsed.get('summary', '')
                 except Exception as e:
                     print('AI JSON parse: ' + str(e))
@@ -6845,8 +6978,9 @@ spec:
                  'location': f.get('location',''), 'cve': f.get('cve',''),
                  'fix_version': f.get('fix_version',''),
                  'impact': 'Vulnerable dependency in shipped image.',
-                 'fix_description': 'Upgrade to the patched version.',
-                 'fix_code': ''}
+                 'fix_description': ('Upgrade to ' + f['fix_version'] + '.') if f.get('fix_version')
+                                     else 'No fixed version available in scan data -- check upstream.',
+                 'fix_code': '', 'ai_generated': False}
                 for f in findings[:10]
             ],
             'all_raw': [{'tool': f['tool'], 'severity': f['severity'], 'title': f['title'][:120],
@@ -7058,6 +7192,24 @@ spec:
         # Static rules/schema text lives in ai/prompts/secrets-rules.txt --
         # kept out of this script to stay under the repo's 250-line convention.
         SECRETS_RULES = textwrap.dedent("""
+        Your job is to add analysis a raw scanner list does not already give the
+        reader. "Tool X found a secret at file:line" is already visible in the scan
+        output -- restating it adds nothing.
+
+        - impact must name what the exposed credential likely grants access to, based
+          on the finding's title/pattern (e.g. a matched "AWS Secret Key" pattern
+          grants cloud account access; a matched DB connection string grants direct
+          database access) -- not a generic "credential exposed" sentence.
+        - fix_description for secrets: rotate/revoke immediately + remove from git
+          history (rewrite history or accept it's permanently compromised) + migrate
+          to a secret manager. Name the specific credential TYPE from the finding
+          when you can, not just "the secret".
+        - Deduplicate: if gitleaks and trufflehog both flagged the same file:line,
+          merge into one finding.
+        - If the same credential value appears at multiple locations (e.g. committed
+          once, then copy-pasted into a config file elsewhere), say so and note all
+          locations need rotation together, not separately.
+
         For each finding, also classify which rung of the secret-injection-maturity ladder it represents, based on the file location/content:
           0 = hard-coded literal committed to source
           1 = build-time token replace / bundled into the built artifact (e.g. Dockerfile ARG/ENV baked at build, Node NEXT_PUBLIC_*/VITE_* inlined into a bundle, Maven/Gradle resource filtering)
@@ -7066,14 +7218,16 @@ spec:
         A static secrets scanner only ever sees what's committed to source, so rungs 3/5/6/7 (container-start render, mounted file, SDK fetch, sidecar injection) never apply to these findings -- pick the closest of 0/1/2/4.
 
         Respond with JSON only:
-        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","summary":"1-3 sentences on what was found and risk","findings":[{"tool":"","severity":"CRITICAL|HIGH|MEDIUM|LOW","title":"","location":"","cve":"","fix_version":"","impact":"consequence if not fixed","fix_description":"what to do","fix_code":"","rung":0,"rung_label":"Hard-coded (committed to source)"}]}
+        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","summary":"1-3 sentences on what was found and risk -- name the credential type(s), not just a count","findings":[{"tool":"","severity":"CRITICAL|HIGH|MEDIUM|LOW","title":"","location":"","cve":"","fix_version":"","impact":"what this specific credential type likely grants access to","fix_description":"rotate/revoke + remove from history + migrate, naming the credential type","fix_code":"","rung":0,"rung_label":"Hard-coded (committed to source)"}]}
 
-        Rules: BLOCK if any verified secret exists. Verified secrets = CRITICAL. fix_description for secrets: rotate/revoke immediately + remove from git history. Respond with valid JSON only, no markdown.
+        Rules: BLOCK if any verified secret exists. Verified secrets = CRITICAL. Respond with valid JSON only, no markdown.
         """).strip()
         if findings:
             prompt = (
-                "You are a secrets-scanning expert. Review these secrets scan findings and "
-                "return a JSON analysis.\n\n"
+                "You are a senior application security engineer with 12+ years of experience in "
+                "incident response for exposed credentials, having led credential-compromise "
+                "investigations across cloud and on-prem environments. Review these secrets scan "
+                "findings the way you would triage a real incident, and return a JSON analysis.\n\n"
                 f"FINDINGS ({len(findings)} total, sorted by severity):\n"
                 f"{json.dumps(findings[:30], indent=2)}\n\n"
             ) + SECRETS_RULES
@@ -7084,6 +7238,8 @@ spec:
                 try:
                     parsed = json.loads(raw.strip())
                     ai_findings = parsed.get("findings", [])
+                    for _f in ai_findings:
+                        _f["ai_generated"] = True
                     summary = parsed.get("summary", "")
                     verdict_ai = parsed.get("verdict", "")
                 except Exception as e:
@@ -7113,7 +7269,8 @@ spec:
                  "fix_description": "Rotate/revoke the credential, then remove from git history.",
                  "fix_code": "",
                  "rung": _guess_rung(f.get("location",""))[0],
-                 "rung_label": _guess_rung(f.get("location",""))[1]}
+                 "rung_label": _guess_rung(f.get("location",""))[1],
+                 "ai_generated": False}
                 for f in findings[:10]
             ],
             "all_raw": [{"tool": f["tool"], "severity": f["severity"], "title": f["title"][:120],
@@ -7407,18 +7564,27 @@ spec:
         # Static rules/schema text lives in ai/prompts/tests-rules.txt --
         # kept out of this script to stay under the repo's 250-line convention.
         TESTS_RULES = textwrap.dedent("""
+        Your job is to add analysis the raw test/compile log does not already give
+        the reader. "Test X failed" is already visible in the log -- the value you add
+        is diagnosing WHY, from the actual error text, not repeating the test name.
+
         Respond with JSON only:
-        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","root_cause":"test_failure|compile_error|infrastructure|unknown","tests_ran":true,"summary":"1-3 sentences explaining what happened and why","test_analysis":[{"test_name":"","failure_reason":"root cause not just symptom","fix_suggestion":""}]}
+        {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","root_cause":"test_failure|compile_error|infrastructure|unknown","tests_ran":true,"summary":"1-3 sentences explaining what happened and why","test_analysis":[{"test_name":"","failure_reason":"the actual root cause from the error text (assertion mismatch, null/undefined access, timeout, missing fixture/mock, wrong test setup) -- not the test name repeated back","fix_suggestion":"specific to the diagnosed cause, not a generic 'fix the test'"}]}
 
         Critical rules:
         - If the compile log contains error messages (syntax errors, missing packages,   build failures), set root_cause='compile_error' and tests_ran=false.   Explain the compile error in the summary -- this is NOT a test failure.
         - BLOCK if tests_ran=true and failed > 0, OR if root_cause='compile_error'.
         - test_analysis should diagnose the real root cause, not just copy the error message.
+        - If several tests fail with the same underlying error (e.g. one broken fixture breaking 10 tests), say so and note fixing the one root cause fixes all of them, instead of writing near-identical entries per test.
         - If tests passed and coverage is below threshold, set verdict=PROCEED_WITH_CAUTION.
         - Respond with valid JSON only, no markdown.
         """).strip()
         prompt = (
-            f"You are a {LANGUAGE} test failure analysis expert.\n\n"
+            f"You are a senior {LANGUAGE} engineer with 12+ years of experience debugging CI failures -- "
+            f"the kind of engineer teammates page when a build is red and nobody knows why. You read past "
+            f"the symptom straight to the root cause (a bad assertion vs. a missing fixture vs. a broken "
+            f"build config are very different problems that look similar in a log). Diagnose these test "
+            f"results with that judgment.\n\n"
             f"TEST RESULTS:\n"
             f"- Passed: {test_summary['passed']}\n"
             f"- Failed: {test_summary['failed']}\n"
@@ -7437,6 +7603,8 @@ spec:
             try:
                 parsed = json.loads(raw.strip())
                 ai_test_analysis = parsed.get("test_analysis", [])
+                for _t in ai_test_analysis:
+                    _t["ai_generated"] = True
                 summary = parsed.get("summary", "")
                 root_cause = parsed.get("root_cause", "unknown")
                 tests_ran = parsed.get("tests_ran", tests_ran)
@@ -7481,7 +7649,9 @@ spec:
             "tests_ran": tests_ran,
             "test_summary": test_summary,
             "test_analysis": ai_test_analysis or [
-                {"test_name": t["name"], "failure_reason": t["message"][:200], "fix_suggestion": "Review the test output and fix the failing assertion or missing setup."}
+                {"test_name": t["name"], "failure_reason": t["message"][:200],
+                 "fix_suggestion": "Review the test output and fix the failing assertion or missing setup.",
+                 "ai_generated": False}
                 for t in test_summary["failures"][:10]
             ],
             "compile_log_excerpt": compile_log[-2000:] if compile_log else None,
@@ -7723,11 +7893,12 @@ spec:
                 Respond with JSON only: {"build_file":"<one candidate or null>","dockerfile_path":"<one candidate or null>","reasoning":"1-2 sentences"}
                 """).strip()
                 prompt = (
-                    "You are a build-engineering assistant. A CI pipeline is about to compile and "
-                    "containerize a repository but its configured build paths don't match what "
-                    "exists on disk. Choose the correct path STRICTLY from the candidate lists "
-                    "below -- never invent a path that isn't listed. If no candidate is clearly "
-                    "correct, return null for that field.\n\n"
+                    "You are a senior build/release engineer with deep experience across monorepos and "
+                    "polyglot repositories, the person teammates ask when a CI pipeline can't find the "
+                    "right build file. A pipeline is about to compile and containerize a repository but "
+                    "its configured build paths don't match what exists on disk. Choose the correct path "
+                    "STRICTLY from the candidate lists below -- never invent a path that isn't listed. "
+                    "If no candidate is clearly correct, return null for that field.\n\n"
                     f"Language: {LANGUAGE}  Build tool: {BUILD_TOOL}\n"
                     f"Configured build-file: '{BUILD_FILE}' (exists: {exists(BUILD_FILE)})\n"
                     f"Candidate build manifests found: {json.dumps(manifest_candidates[:20])}\n"
