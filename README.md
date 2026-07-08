@@ -246,6 +246,8 @@ Every commit goes through an 11-stage security pipeline:
 Clone → Secrets → SAST → Dep scan → Compile → Tests → Build → Image scan → AI → Review → Push
 ```
 
+The AI stage is optional per app, and can be scoped to specific branches (e.g. only `main`/`release`, skip `dev` to save API cost) — configurable during onboarding and editable anytime. When AI is skipped, the pipeline goes straight from image scan to Review with raw scanner findings only.
+
 ### Security scanners (30+)
 
 | Category | Tools |
@@ -259,7 +261,7 @@ Clone → Secrets → SAST → Dep scan → Compile → Tests → Build → Imag
 
 ### AI risk grading
 
-After every scan the AI analyses all findings and produces a **risk grade A–F**, **executive summary**, and **prioritised findings list**.
+When enabled, the AI analyses all findings after every scan and produces a **risk grade A–F**, **executive summary**, and **prioritised findings list**. Each finding is tagged as genuinely AI-reasoned or a raw-data fallback (used if AI is disabled or the call fails), so it's never ambiguous which one you're looking at.
 
 | Grade | Meaning |
 |-------|---------|
