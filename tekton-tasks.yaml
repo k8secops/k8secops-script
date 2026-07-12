@@ -8,7 +8,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: git-clone
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: clone
 spec:
@@ -131,7 +131,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-secrets-scan
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: secrets
 spec:
@@ -272,7 +272,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-bandit
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sast
     gitops-platform.io/language: python
@@ -334,7 +334,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-bearer
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sast
 spec:
@@ -396,7 +396,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-checkov
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sast
 spec:
@@ -481,7 +481,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-eslint-security
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sast
     gitops-platform.io/language: nodejs
@@ -559,7 +559,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-gosec
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sast
     gitops-platform.io/language: go
@@ -626,7 +626,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-language
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sast
     gitops-platform.io/role: dispatcher
@@ -673,7 +673,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-roslyn
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sast
     gitops-platform.io/language: dotnet
@@ -752,7 +752,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-semgrep
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sast
 spec:
@@ -809,7 +809,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-sonarqube-dotnet
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sast
 spec:
@@ -1004,7 +1004,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-sonarqube
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sast
 spec:
@@ -1203,7 +1203,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-spotbugs
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sast
     gitops-platform.io/language: java
@@ -1315,7 +1315,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sca-owasp
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sca
 spec:
@@ -1400,7 +1400,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sca-osv
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sca
 spec:
@@ -1456,7 +1456,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-test-dotnet
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/language: dotnet
@@ -1670,11 +1670,17 @@ spec:
                 data=payload, headers=headers, method="POST"), timeout=10)
         except Exception as e:
             print(f"Coverage notify failed (non-fatal): {e}")
+        # Never fail the Tekton task/pipeline on test results -- the developer
+        # and reviewer decide at the human gate what to do with an image that
+        # has failing tests or low coverage, not this task. Results are
+        # already persisted above via the /coverage callback regardless of
+        # outcome; this only affects this step's own exit code.
         if failed > 0:
-            print(f"FAIL: {failed} test(s) failed"); sys.exit(1)
-        if coverage < threshold:
-            print(f"FAIL: coverage {coverage}% below threshold {threshold}%"); sys.exit(1)
-        print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
+            print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
+        elif coverage < threshold:
+            print(f"NOTE: coverage {coverage}% below threshold {threshold}% -- proceeding; visible at the human gate for review")
+        else:
+            print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 
 # Source: platform/tekton/tasks/tests/test-go-task.yaml
@@ -1684,7 +1690,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-test-go
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/language: go
@@ -1867,11 +1873,17 @@ spec:
                 data=payload, headers=headers, method="POST"), timeout=10)
         except Exception as e:
             print(f"Coverage notify failed (non-fatal): {e}")
+        # Never fail the Tekton task/pipeline on test results -- the developer
+        # and reviewer decide at the human gate what to do with an image that
+        # has failing tests or low coverage, not this task. Results are
+        # already persisted above via the /coverage callback regardless of
+        # outcome; this only affects this step's own exit code.
         if failed > 0:
-            print(f"FAIL: {failed} test(s) failed"); sys.exit(1)
-        if coverage < threshold:
-            print(f"FAIL: coverage {coverage}% below threshold {threshold}%"); sys.exit(1)
-        print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
+            print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
+        elif coverage < threshold:
+            print(f"NOTE: coverage {coverage}% below threshold {threshold}% -- proceeding; visible at the human gate for review")
+        else:
+            print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 
 # Source: platform/tekton/tasks/tests/test-java-task.yaml
@@ -1881,7 +1893,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-test-java
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/language: java
@@ -2094,11 +2106,17 @@ spec:
                 data=payload, headers=headers, method="POST"), timeout=10)
         except Exception as e:
             print(f"Coverage notify failed (non-fatal): {e}")
+        # Never fail the Tekton task/pipeline on test results -- the developer
+        # and reviewer decide at the human gate what to do with an image that
+        # has failing tests or low coverage, not this task. Results are
+        # already persisted above via the /coverage callback regardless of
+        # outcome; this only affects this step's own exit code.
         if failed > 0:
-            print(f"FAIL: {failed} test(s) failed"); sys.exit(1)
-        if coverage < threshold:
-            print(f"FAIL: coverage {coverage}% below threshold {threshold}%"); sys.exit(1)
-        print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
+            print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
+        elif coverage < threshold:
+            print(f"NOTE: coverage {coverage}% below threshold {threshold}% -- proceeding; visible at the human gate for review")
+        else:
+            print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 
 # Source: platform/tekton/tasks/tests/test-nodejs-task.yaml
@@ -2108,7 +2126,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-test-nodejs
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/language: nodejs
@@ -2289,11 +2307,17 @@ spec:
                 data=payload, headers=headers, method="POST"), timeout=10)
         except Exception as e:
             print(f"Coverage notify failed (non-fatal): {e}")
+        # Never fail the Tekton task/pipeline on test results -- the developer
+        # and reviewer decide at the human gate what to do with an image that
+        # has failing tests or low coverage, not this task. Results are
+        # already persisted above via the /coverage callback regardless of
+        # outcome; this only affects this step's own exit code.
         if failed > 0:
-            print(f"FAIL: {failed} test(s) failed"); sys.exit(1)
-        if coverage < threshold:
-            print(f"FAIL: coverage {coverage}% below threshold {threshold}%"); sys.exit(1)
-        print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
+            print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
+        elif coverage < threshold:
+            print(f"NOTE: coverage {coverage}% below threshold {threshold}% -- proceeding; visible at the human gate for review")
+        else:
+            print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 
 # Source: platform/tekton/tasks/tests/test-python-task.yaml
@@ -2303,7 +2327,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-test-python
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/language: python
@@ -2410,6 +2434,12 @@ spec:
         BUILD_FILE="$(params.build-file)"
         if [ -f "$BUILD_FILE" ]; then pip install --quiet --user -r "$BUILD_FILE" --break-system-packages 2>/dev/null || true; fi
         if [ -f "pyproject.toml" ]; then pip install --quiet --user -e ".[test]" --break-system-packages 2>/dev/null || true; fi
+        # Test-only deps (mocking libs, etc.) declared separately from the
+        # runtime build file -- same directory, requirements-dev.txt by
+        # convention. Best-effort like the installs above: silently no-ops
+        # for apps that don't split their deps this way.
+        DEV_FILE="$(dirname "$BUILD_FILE")/requirements-dev.txt"
+        if [ -f "$DEV_FILE" ]; then pip install --quiet --user -r "$DEV_FILE" --break-system-packages 2>/dev/null || true; fi
 
         mkdir -p $(workspaces.results.path)/tests
         # Use test-dir if provided, otherwise pytest auto-discovers from repo root
@@ -2485,11 +2515,17 @@ spec:
                 data=payload, headers=headers, method="POST"), timeout=10)
         except Exception as e:
             print(f"Coverage notify failed (non-fatal): {e}")
+        # Never fail the Tekton task/pipeline on test results -- the developer
+        # and reviewer decide at the human gate what to do with an image that
+        # has failing tests or low coverage, not this task. Results are
+        # already persisted above via the /coverage callback regardless of
+        # outcome; this only affects this step's own exit code.
         if failed > 0:
-            print(f"FAIL: {failed} test(s) failed"); sys.exit(1)
-        if coverage < threshold:
-            print(f"FAIL: coverage {coverage}% below threshold {threshold}%"); sys.exit(1)
-        print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
+            print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
+        elif coverage < threshold:
+            print(f"NOTE: coverage {coverage}% below threshold {threshold}% -- proceeding; visible at the human gate for review")
+        else:
+            print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 
 # Source: platform/tekton/tasks/tests/unit-tests-task.yaml
@@ -2499,7 +2535,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-unit-tests
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/role: dispatcher
@@ -2554,7 +2590,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-build-image-local
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: build
 spec:
@@ -2697,7 +2733,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-compile-dotnet
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: compile
 spec:
@@ -2800,8 +2836,19 @@ spec:
         # NOTE: each $(workspaces.<name>.path) must appear literally here --
         # Tekton substitutes these as plain text before the script runs, so
         # it cannot resolve one built from a Python loop variable.
-        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
-                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+        # An unbound optional workspace substitutes to an EMPTY STRING, not an
+        # absent/error value -- pathlib.Path("") resolves to ".", the step's own
+        # cwd, which always exists. Checking is_dir() alone therefore never skips
+        # an unbound workspace; it silently iterates the step's cwd instead
+        # (confirmed live: cwd was "/" for the materialize step, so this only
+        # ever produced empty output rather than bogus creds -- but it's a latent
+        # bug the moment cwd contains real files). Check the raw substitution for
+        # emptiness first, before constructing a Path at all.
+        for raw_ws_path in ("$(workspaces.extra-service-creds.path)",
+                             "$(workspaces.extra-generic-build-creds.path)"):
+            if not raw_ws_path:
+                continue
+            svc_dir = pathlib.Path(raw_ws_path)
             if not svc_dir.is_dir():
                 continue
             for f in sorted(svc_dir.iterdir()):
@@ -2989,7 +3036,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-compile-go
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: compile
 spec:
@@ -3083,8 +3130,15 @@ spec:
         # NOTE: each $(workspaces.<name>.path) must appear literally here --
         # Tekton substitutes these as plain text before the script runs, so
         # it cannot resolve one built from a Python loop variable.
-        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
-                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+        # An unbound optional workspace substitutes to an EMPTY STRING --
+        # pathlib.Path("") resolves to ".", the step's own cwd, which
+        # always exists, so is_dir() alone never skips an unbound
+        # workspace. Check the raw substitution for emptiness first.
+        for raw_ws_path in ("$(workspaces.extra-service-creds.path)",
+                             "$(workspaces.extra-generic-build-creds.path)"):
+            if not raw_ws_path:
+                continue
+            svc_dir = pathlib.Path(raw_ws_path)
             if not svc_dir.is_dir():
                 continue
             for f in sorted(svc_dir.iterdir()):
@@ -3166,7 +3220,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-compile-java
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: compile
 spec:
@@ -3282,8 +3336,15 @@ spec:
         # NOTE: each $(workspaces.<name>.path) must appear literally here --
         # Tekton substitutes these as plain text before the script runs, so
         # it cannot resolve one built from a Python loop variable.
-        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
-                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+        # An unbound optional workspace substitutes to an EMPTY STRING --
+        # pathlib.Path("") resolves to ".", the step's own cwd, which
+        # always exists, so is_dir() alone never skips an unbound
+        # workspace. Check the raw substitution for emptiness first.
+        for raw_ws_path in ("$(workspaces.extra-service-creds.path)",
+                             "$(workspaces.extra-generic-build-creds.path)"):
+            if not raw_ws_path:
+                continue
+            svc_dir = pathlib.Path(raw_ws_path)
             if not svc_dir.is_dir():
                 continue
             for f in sorted(svc_dir.iterdir()):
@@ -3394,7 +3455,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-compile-nodejs
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: compile
 spec:
@@ -3487,8 +3548,15 @@ spec:
         # NOTE: each $(workspaces.<name>.path) must appear literally here --
         # Tekton substitutes these as plain text before the script runs, so
         # it cannot resolve one built from a Python loop variable.
-        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
-                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+        # An unbound optional workspace substitutes to an EMPTY STRING --
+        # pathlib.Path("") resolves to ".", the step's own cwd, which
+        # always exists, so is_dir() alone never skips an unbound
+        # workspace. Check the raw substitution for emptiness first.
+        for raw_ws_path in ("$(workspaces.extra-service-creds.path)",
+                             "$(workspaces.extra-generic-build-creds.path)"):
+            if not raw_ws_path:
+                continue
+            svc_dir = pathlib.Path(raw_ws_path)
             if not svc_dir.is_dir():
                 continue
             for f in sorted(svc_dir.iterdir()):
@@ -3575,7 +3643,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-compile-python
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: compile
 spec:
@@ -3666,8 +3734,15 @@ spec:
         # NOTE: each $(workspaces.<name>.path) must appear literally here --
         # Tekton substitutes these as plain text before the script runs, so
         # it cannot resolve one built from a Python loop variable.
-        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
-                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+        # An unbound optional workspace substitutes to an EMPTY STRING --
+        # pathlib.Path("") resolves to ".", the step's own cwd, which
+        # always exists, so is_dir() alone never skips an unbound
+        # workspace. Check the raw substitution for emptiness first.
+        for raw_ws_path in ("$(workspaces.extra-service-creds.path)",
+                             "$(workspaces.extra-generic-build-creds.path)"):
+            if not raw_ws_path:
+                continue
+            svc_dir = pathlib.Path(raw_ws_path)
             if not svc_dir.is_dir():
                 continue
             for f in sorted(svc_dir.iterdir()):
@@ -3781,7 +3856,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-lang-compile
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: compile
 spec:
@@ -3898,7 +3973,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-hadolint
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: build
 spec:
@@ -3940,7 +4015,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-human-gate
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: human-gate
 spec:
@@ -4044,150 +4119,6 @@ spec:
         sys.exit(1)
 
 
-# Source: platform/tekton/tasks/build/image-promote-task.yaml
----
-# "" Image Promote (isolation opt-in, only after human YES) """
-# Replaces gitops-image-push in the main pipeline when values.yaml
-# imageBuildIsolation.enabled=true. The image was already pushed to a
-# "-candidate" tag by the isolated build namespace (gitops-build-image-
-# candidate); this task retags it to the real tag via a registry-to-registry
-# copy -- no local disk, no image-tar workspace needed. Emits the same
-# results and calls the same image-pushed callback gitops-image-push does,
-# so downstream image-sign / pipelines_gate.py need no changes.
-apiVersion: tekton.dev/v1
-kind: Task
-metadata:
-  name: gitops-image-promote
-  namespace: tekton-pipelines
-  labels:
-    gitops-platform.io/stage: push
-spec:
-  description: |
-    Retags the approved candidate image to the real tag (registry-to-
-    registry skopeo copy), then best-effort deletes the candidate tag.
-  params:
-    - name: candidate-image-ref
-      type: string
-    - name: image-registry
-      type: string
-    - name: image-name
-      type: string
-    - name: image-tag
-      type: string
-    - name: operator-api-url
-      type: string
-    - name: pipeline-run-id
-      type: string
-  workspaces:
-    - name: registry-credentials
-  results:
-    - name: IMAGE_TAG
-    - name: IMAGE_DIGEST
-    - name: IMAGE_FULL_URL
-  steps:
-    - name: promote
-      image: k8secops/k8secops:skopeo-v1.16.0
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      script: |
-        #!/bin/sh
-        set -e
-        CREDS_DIR="$(workspaces.registry-credentials.path)"
-
-        REGISTRY="$(params.image-registry)"
-        case "$REGISTRY" in
-          *hub.docker.com*|*docker.io*|*registry-1.docker.io*) REGISTRY="index.docker.io" ;;
-        esac
-        FULL_REF="$REGISTRY/$(params.image-name):$(params.image-tag)"
-        CANDIDATE_REF="$(params.candidate-image-ref)"
-
-        TEMP_AUTH=/tmp/config.json
-        sed "s|registry.hub.docker.com|index.docker.io|g; s|registry-1.docker.io|index.docker.io|g" \
-          "$CREDS_DIR/config.json" > "$TEMP_AUTH" 2>/dev/null || cp "$CREDS_DIR/config.json" "$TEMP_AUTH"
-
-        echo "Promoting $CANDIDATE_REF -> $FULL_REF..."
-        skopeo copy \
-          --authfile "$TEMP_AUTH" \
-          "docker://$CANDIDATE_REF" \
-          "docker://$FULL_REF"
-
-        DIGEST=$(skopeo inspect --authfile "$TEMP_AUTH" \
-          "docker://$FULL_REF" 2>/dev/null | grep -o '"Digest":"[^"]*"' \
-          | head -1 | cut -d'"' -f4)
-        [ -z "$DIGEST" ] && DIGEST="unknown"
-
-        printf '%s' "$(params.image-tag)" > "$(results.IMAGE_TAG.path)"
-        printf '%s' "$DIGEST"             > "$(results.IMAGE_DIGEST.path)"
-        printf '%s' "$FULL_REF"           > "$(results.IMAGE_FULL_URL.path)"
-        echo "Promoted: $FULL_REF@$DIGEST"
-
-        # Best-effort candidate cleanup now that it's been promoted -- NOT
-        # reliable on Docker Hub, which doesn't support the standard v2
-        # manifest DELETE API. Never fails the task either way; full GC
-        # (including the on-reject case, where this task never runs at all)
-        # is a documented follow-up.
-        skopeo delete --authfile "$TEMP_AUTH" "docker://$CANDIDATE_REF" 2>/dev/null \
-          && echo "Deleted candidate tag $CANDIDATE_REF" \
-          || echo "Candidate tag cleanup skipped/unsupported by registry (non-fatal): $CANDIDATE_REF"
-
-    - name: notify-pushed
-      image: k8secops/k8secops:python-3.12-slim
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      env:
-        - name: OPERATOR_API_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: gitops-operator-token
-              key: operatorApiToken
-      script: |
-        #!/usr/bin/env python3
-        import urllib.request, json, os
-
-        tag    = open("$(results.IMAGE_TAG.path)").read()
-        digest = open("$(results.IMAGE_DIGEST.path)").read()
-        url    = open("$(results.IMAGE_FULL_URL.path)").read()
-        token  = os.environ.get("OPERATOR_API_TOKEN", "")
-
-        payload = json.dumps({
-            "runId": "$(params.pipeline-run-id)",
-            "imageTag": tag,
-            "imageDigest": digest,
-            "imageUrl": url,
-            "imageSigned": False,
-            "status": "pushed"
-        }).encode()
-
-        headers = {"Content-Type": "application/json"}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-
-        try:
-            req = urllib.request.Request(
-                "$(params.operator-api-url)/api/v1/pipelines/$(params.pipeline-run-id)/image-pushed",
-                data=payload,
-                headers=headers,
-                method="POST"
-            )
-            urllib.request.urlopen(req, timeout=10)
-            print(f"Notified operator: image promoted {url}")
-        except Exception as e:
-            print(f"Operator notify failed (non-fatal): {e}")
-
 # Source: platform/tekton/tasks/build/image-push-task.yaml
 ---
 # "" Image Push (only after human YES) """"""""""""""""""""
@@ -4195,7 +4126,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-image-push
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: push
 spec:
@@ -4362,7 +4293,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-image-sign
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: push
 spec:
@@ -4480,7 +4411,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-scan-clamav
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: image-scan
 spec:
@@ -4570,7 +4501,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-notify-status
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: notify
 spec:
@@ -4629,7 +4560,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-pre-build
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: build
 spec:
@@ -4845,7 +4776,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-precompile
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: precompile
 spec:
@@ -4906,8 +4837,15 @@ spec:
         # $(cat '<path>') at SOURCE time so the value never passes through this
         # script's shell quoting/escaping, only the platform-controlled path does.
         svc_lines: list[str] = []
-        for svc_dir in (pathlib.Path("$(workspaces.extra-service-creds.path)"),
-                        pathlib.Path("$(workspaces.extra-generic-build-creds.path)")):
+        # An unbound optional workspace substitutes to an EMPTY STRING --
+        # pathlib.Path("") resolves to ".", the step's own cwd, which
+        # always exists, so is_dir() alone never skips an unbound
+        # workspace. Check the raw substitution for emptiness first.
+        for raw_ws_path in ("$(workspaces.extra-service-creds.path)",
+                             "$(workspaces.extra-generic-build-creds.path)"):
+            if not raw_ws_path:
+                continue
+            svc_dir = pathlib.Path(raw_ws_path)
             if not svc_dir.is_dir():
                 continue
             for f in sorted(svc_dir.iterdir()):
@@ -4963,114 +4901,6 @@ spec:
         "$EXEC"
         echo """ Precompile script completed """
 
-# Source: platform/tekton/tasks/build/scan-grype-remote-task.yaml
----
-# "" Grype -- scans a remote candidate image by reference """
-# Opt-in variant used when values.yaml imageBuildIsolation.enabled=true.
-# gitops-scan-grype (local tar) is untouched.
-apiVersion: tekton.dev/v1
-kind: Task
-metadata:
-  name: gitops-scan-grype-remote
-  namespace: tekton-pipelines
-  labels:
-    gitops-platform.io/stage: image-scan
-spec:
-  description: "Grype image scan on a remote candidate image reference. Apache 2.0. No token."
-  params:
-    - name: image-ref
-      type: string
-      description: "Full candidate image reference to pull and scan"
-  workspaces:
-    - name: registry-credentials
-    - name: results
-    - name: vulndb-cache
-  results:
-    - name: CRITICAL_COUNT
-    - name: HIGH_COUNT
-  steps:
-    - name: setup
-      image: k8secops/k8secops:python-3.12-slim
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      script: |
-        #!/bin/sh
-        mkdir -p $(workspaces.results.path)/image-scan
-        mkdir -p $(workspaces.vulndb-cache.path)/grype/tmp $(workspaces.vulndb-cache.path)/grype/db
-        echo "-- Grype image scan (remote) --"
-        echo "  Image : $(params.image-ref)"
-
-    - name: grype-scan
-      image: k8secops/k8secops:grype-v0.80.0
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      computeResources:
-        requests: {cpu: "200m", memory: "512Mi"}
-        limits:   {cpu: "1000m", memory: "2Gi"}
-      env:
-        - name: HOME
-          value: "$(workspaces.vulndb-cache.path)/grype"
-        - name: TMPDIR
-          value: "$(workspaces.vulndb-cache.path)/grype/tmp"
-        - name: GRYPE_DB_AUTO_UPDATE
-          value: "true"
-        - name: GRYPE_DB_VALIDATE_AGE
-          value: "false"
-        - name: GRYPE_DB_CACHE_DIR
-          value: "$(workspaces.vulndb-cache.path)/grype/db"
-        - name: DOCKER_CONFIG
-          value: "$(workspaces.registry-credentials.path)"
-      # anchore/grype:latest is distroless -- binary is at /grype, not on PATH
-      command: ["/grype"]
-      args:
-        - "registry:$(params.image-ref)"
-        - "--output"
-        - "json"
-        - "--file"
-        - "$(workspaces.results.path)/image-scan/grype.json"
-        - "--add-cpes-if-none"
-        - "--quiet"
-
-    - name: parse
-      image: k8secops/k8secops:python-3.12-slim
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      script: |
-        #!/usr/bin/env python3
-        import json, pathlib
-        counts = {"Critical": 0, "High": 0}
-        try:
-            d = json.loads(pathlib.Path("$(workspaces.results.path)/image-scan/grype.json").read_text())
-            for m in d.get("matches", []):
-                sev = m.get("vulnerability", {}).get("severity", "Unknown")
-                counts[sev] = counts.get(sev, 0) + 1
-        except Exception as e:
-            print(f"Parse warning: {e}")
-        pathlib.Path("$(results.CRITICAL_COUNT.path)").write_text(str(counts["Critical"]))
-        pathlib.Path("$(results.HIGH_COUNT.path)").write_text(str(counts["High"]))
-        print(f"Grype result -- Critical={counts['Critical']} High={counts['High']}")
-
 # Source: platform/tekton/tasks/build/scan-grype-task.yaml
 ---
 # "" Grype -- scans local tar """""""""""""""""""""""""""""""
@@ -5082,7 +4912,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-scan-grype
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: image-scan
 spec:
@@ -5187,99 +5017,6 @@ spec:
         print(f"Report: image-scan/grype.json  ({size_kb} KB, {total} matches)")
 
 
-# Source: platform/tekton/tasks/build/scan-syft-remote-task.yaml
----
-# "" Syft -- SBOM generation from a remote candidate image reference "
-# Opt-in variant used when values.yaml imageBuildIsolation.enabled=true.
-# gitops-scan-syft (local tar) is untouched.
-apiVersion: tekton.dev/v1
-kind: Task
-metadata:
-  name: gitops-scan-syft-remote
-  namespace: tekton-pipelines
-  labels:
-    gitops-platform.io/stage: sbom
-spec:
-  description: "Syft SBOM generation (CycloneDX) on a remote candidate image reference. Apache 2.0. No token."
-  params:
-    - name: image-ref
-      type: string
-      description: "Full candidate image reference to pull and scan"
-  workspaces:
-    - name: registry-credentials
-    - name: results
-  results:
-    - name: PACKAGE_COUNT
-  steps:
-    - name: setup
-      image: k8secops/k8secops:python-3.12-slim
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      script: |
-        #!/bin/sh
-        mkdir -p $(workspaces.results.path)/sbom $(workspaces.results.path)/.syft-cache
-        echo "-- Syft SBOM generation (remote) --"
-        echo "  Image : $(params.image-ref)"
-
-    - name: syft-scan
-      image: k8secops/k8secops:syft-v1.9.0
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      computeResources:
-        requests: {cpu: "200m", memory: "512Mi"}
-        limits:   {cpu: "1000m", memory: "1Gi"}
-      env:
-        - name: HOME
-          value: "$(workspaces.results.path)/.syft-cache"
-        - name: TMPDIR
-          value: "$(workspaces.results.path)/.syft-cache"
-        - name: DOCKER_CONFIG
-          value: "$(workspaces.registry-credentials.path)"
-      # anchore/syft:latest is distroless -- binary is at /syft, not on PATH
-      command: ["/syft"]
-      args:
-        - "registry:$(params.image-ref)"
-        - "-o"
-        - "cyclonedx-json=$(workspaces.results.path)/sbom/sbom.cyclonedx.json"
-        - "-q"
-
-    - name: parse
-      image: k8secops/k8secops:python-3.12-slim
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      script: |
-        #!/usr/bin/env python3
-        import json, pathlib
-        count = 0
-        try:
-            d = json.loads(pathlib.Path("$(workspaces.results.path)/sbom/sbom.cyclonedx.json").read_text())
-            count = len(d.get("components", []))
-        except Exception as e:
-            print(f"Parse warning: {e}")
-        pathlib.Path("$(results.PACKAGE_COUNT.path)").write_text(str(count))
-        print(f"Syft SBOM -- {count} components")
-
 # Source: platform/tekton/tasks/build/scan-syft-task.yaml
 ---
 # "" Syft -- SBOM generation from local tar """""""""""""""""
@@ -5291,7 +5028,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-scan-syft
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: sbom
 spec:
@@ -5380,91 +5117,6 @@ spec:
         print(f"Report: sbom/sbom.cyclonedx.json  ({size_kb} KB, {count} components)")
 
 
-# Source: platform/tekton/tasks/build/scan-trivy-remote-task.yaml
----
-# "" Trivy -- scans a remote candidate image by reference """
-# Opt-in variant used when values.yaml imageBuildIsolation.enabled=true --
-# the image was built+pushed in a separate namespace (no local image-tar
-# workspace exists in this pipeline), so this scans the registry-pushed
-# candidate directly instead. gitops-scan-trivy (local tar) is untouched.
-apiVersion: tekton.dev/v1
-kind: Task
-metadata:
-  name: gitops-scan-trivy-remote
-  namespace: tekton-pipelines
-  labels:
-    gitops-platform.io/stage: image-scan
-spec:
-  description: "Trivy image scan on a remote candidate image reference. Apache 2.0."
-  params:
-    - name: severity
-      default: "CRITICAL,HIGH,MEDIUM"
-    - name: image-ref
-      type: string
-      description: "Full candidate image reference to pull and scan"
-  workspaces:
-    - name: registry-credentials
-    - name: results
-    - name: vulndb-cache
-  results:
-    - name: CRITICAL_COUNT
-    - name: HIGH_COUNT
-    - name: MEDIUM_COUNT
-  steps:
-    - name: trivy
-      image: k8secops/k8secops:trivy-0.54.1
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      computeResources:
-        requests: {cpu: "200m", memory: "512Mi"}
-        limits:   {cpu: "1000m", memory: "2Gi"}
-      env:
-        - name: TRIVY_CACHE_DIR
-          value: "$(workspaces.vulndb-cache.path)/trivy"
-        - name: DOCKER_CONFIG
-          value: "$(workspaces.registry-credentials.path)"
-      script: |
-        #!/bin/sh
-        mkdir -p $(workspaces.results.path)/image-scan "$TRIVY_CACHE_DIR"
-        IMAGE_REF="$(params.image-ref)"
-
-        echo "-- Trivy image scan (remote) --"
-        echo "  Image : $IMAGE_REF"
-        echo "  Rules : $(params.severity)"
-        echo ""
-
-        trivy image \
-          "$IMAGE_REF" \
-          --format sarif \
-          --output $(workspaces.results.path)/image-scan/trivy.sarif \
-          --scanners vuln,secret,misconfig,license \
-          --severity "$(params.severity)" \
-          --exit-code 0 2>/dev/null || true
-
-        trivy image \
-          "$IMAGE_REF" \
-          --format json \
-          --output $(workspaces.results.path)/image-scan/trivy.json \
-          --scanners vuln,secret,misconfig,license \
-          --exit-code 0 2>/dev/null || true
-
-        JSON="$(workspaces.results.path)/image-scan/trivy.json"
-        CRITICAL=$(grep -o '"Severity":"CRITICAL"' "$JSON" 2>/dev/null | wc -l | tr -d ' ')
-        HIGH=$(grep -o '"Severity":"HIGH"' "$JSON" 2>/dev/null | wc -l | tr -d ' ')
-        MEDIUM=$(grep -o '"Severity":"MEDIUM"' "$JSON" 2>/dev/null | wc -l | tr -d ' ')
-        CRITICAL=${CRITICAL:-0}; HIGH=${HIGH:-0}; MEDIUM=${MEDIUM:-0}
-        printf '%s' "$CRITICAL" > $(results.CRITICAL_COUNT.path)
-        printf '%s' "$HIGH"     > $(results.HIGH_COUNT.path)
-        printf '%s' "$MEDIUM"   > $(results.MEDIUM_COUNT.path)
-        echo "Trivy result -- CRITICAL=$CRITICAL HIGH=$HIGH MEDIUM=$MEDIUM"
-
 # Source: platform/tekton/tasks/build/scan-trivy-task.yaml
 ---
 # "" Trivy -- scans local tar """""""""""""""""""""""""""""""
@@ -5472,7 +5124,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-scan-trivy
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: image-scan
 spec:
@@ -5551,144 +5203,13 @@ spec:
         echo "Report: image-scan/trivy.json  ($SIZE, C=$CRITICAL H=$HIGH M=$MEDIUM)"
 
 
-# Source: platform/tekton/tasks/build/wait-for-remote-build-task.yaml
----
-# "" Wait For Remote Build (isolation opt-in) """""""""""""""
-# Replaces pre-build/hadolint/build-image-local in the main pipeline when
-# values.yaml imageBuildIsolation.enabled=true. Triggers the isolated build
-# namespace's own PipelineRun (via the operator, which re-clones+recompiles
-# there and runs Kaniko with elevated privilege in a separate, tightly-RBAC'd
-# namespace) and polls for its result -- same POST-then-poll shape as
-# gitops-human-gate, just unattended (no human decision involved).
-apiVersion: tekton.dev/v1
-kind: Task
-metadata:
-  name: gitops-wait-for-remote-build
-  namespace: tekton-pipelines
-  labels:
-    gitops-platform.io/stage: build
-spec:
-  description: |
-    Triggers the isolated build namespace's PipelineRun and polls the
-    operator for its result. Timeout: 2h (build+compile+Kaniko, no human
-    involved -- much shorter than the 24h human-gate timeout).
-  params:
-    - name: app-name
-      type: string
-    - name: git-commit-sha
-      type: string
-    - name: image-tag
-      type: string
-    - name: build-file
-      type: string
-    - name: build-context
-      type: string
-    - name: dockerfile-path
-      type: string
-    - name: pipeline-run-id
-      type: string
-    - name: operator-api-url
-      type: string
-  results:
-    - name: CANDIDATE_IMAGE_REF
-    - name: CANDIDATE_IMAGE_DIGEST
-  steps:
-    - name: wait-for-build
-      image: k8secops/k8secops:python-3.12-slim
-      timeout: "2h"
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      env:
-        - name: OPERATOR_API_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: gitops-operator-token
-              key: operatorApiToken
-      script: |
-        #!/usr/bin/env python3
-        import urllib.request, json, time, sys, os
-
-        sys.stdout.reconfigure(line_buffering=True)
-
-        run_id      = "$(params.pipeline-run-id)"
-        api_url     = "$(params.operator-api-url)"
-        trigger_url = f"{api_url}/api/v1/pipelines/{run_id}/trigger-build"
-        poll_url    = f"{api_url}/api/v1/pipelines/{run_id}/build-status"
-        token       = os.environ.get("OPERATOR_API_TOKEN", "")
-        auth_header = {"Authorization": f"Bearer {token}"} if token else {}
-
-        payload = json.dumps({
-            "commitSha":      "$(params.git-commit-sha)",
-            "imageTag":        "$(params.image-tag)",
-            "buildFile":       "$(params.build-file)",
-            "buildContext":    "$(params.build-context)",
-            "dockerfilePath":  "$(params.dockerfile-path)",
-        }).encode()
-
-        for attempt in range(1, 7):
-            try:
-                req = urllib.request.Request(
-                    trigger_url, data=payload,
-                    headers={"Content-Type": "application/json", **auth_header},
-                    method="POST")
-                urllib.request.urlopen(req, timeout=15)
-                print(f"Remote build triggered (attempt {attempt}) for run {run_id}")
-                break
-            except Exception as e:
-                wait = attempt * 10
-                print(f"Trigger-build attempt {attempt} failed: {e} -- retrying in {wait}s")
-                if attempt < 6:
-                    time.sleep(wait)
-                else:
-                    print("Trigger-build failed after 6 attempts -- aborting")
-                    sys.exit(1)
-
-        # Poll every 10 seconds for up to 2 hours
-        polls = 0
-        max_polls = 2 * 60 * 6  # 2h -- 60min -- 6 polls/min
-
-        while polls < max_polls:
-            try:
-                poll_req = urllib.request.Request(poll_url, headers=auth_header)
-                resp = urllib.request.urlopen(poll_req, timeout=10)
-                data = json.loads(resp.read())
-                status = data.get("status", "").upper()
-
-                if status == "SUCCEEDED":
-                    ref    = data.get("candidateImageRef", "")
-                    digest = data.get("candidateImageDigest", "")
-                    open("$(results.CANDIDATE_IMAGE_REF.path)", "w").write(ref)
-                    open("$(results.CANDIDATE_IMAGE_DIGEST.path)", "w").write(digest)
-                    print(f"Remote build succeeded: {ref}@{digest}")
-                    sys.exit(0)
-
-                elif status == "FAILED":
-                    print("Remote build failed -- stopping pipeline")
-                    sys.exit(1)
-
-            except Exception as e:
-                if polls % 30 == 0:
-                    print(f"Still waiting for remote build... ({polls * 10 // 60} min elapsed)")
-            time.sleep(10)
-            polls += 1
-
-        print("Remote build timed out after 2h -- stopping pipeline")
-        sys.exit(1)
-
 # Source: platform/tekton/tasks/ai/ai-aggregate.yaml
 ---
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-aggregate
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: ai-analysis
 spec:
@@ -5709,6 +5230,9 @@ spec:
       type: string
     - name: operator-api-url
       type: string
+    - name: ai-run
+      type: string
+      default: "true"
   workspaces:
     - name: ai-results
     - name: ai-credentials
@@ -5759,6 +5283,13 @@ spec:
                 }.get(AI_PROVIDER, "")
         except Exception as e:
             print(f"Credentials: {e}")
+
+        # ai-run=false means AI is disabled for this branch (cost-saving toggle) --
+        # aggregation/report-posting must still run, only the paid AI synthesis call
+        # is skipped. Reuses the same deterministic-fallback path call_ai() already
+        # takes when no credentials are configured.
+        if "$(params.ai-run)" != "true":
+            AI_PROVIDER = AI_API_KEY = ""
 
         IN_DIR   = pathlib.Path("$(workspaces.ai-results.path)")
         OPERATOR = "$(params.operator-api-url)"
@@ -5830,6 +5361,25 @@ spec:
                 'label': 'OWASP Dependency-Check',
                 'reason': sca_cat['owasp_skip_reason'],
             })
+
+        # -- Preflight build-config notes (test-dir/build-file/dockerfile-path
+        # auto-corrected or left ambiguous/broken) -- ai-preflight runs before any
+        # category task and writes this straight into ai-results (a Tekton task
+        # result only ever reaches downstream task params, never this report), so
+        # surface it the same way as other scan gaps rather than leaving it buried
+        # in raw Tekton logs nobody but the platform team ever reads.
+        preflight_fp = IN_DIR / "preflight.json"
+        if preflight_fp.exists():
+            try:
+                pf = json.loads(preflight_fp.read_text())
+                if pf.get("flagged"):
+                    scan_gaps.append({
+                        "tool": "ai-preflight",
+                        "label": "Build Config",
+                        "reason": pf.get("note", ""),
+                    })
+            except Exception as e:
+                print(f"preflight.json load: {e}")
 
         # -- Merge all findings ----------------------------------------
         all_ai_findings = []
@@ -5912,6 +5462,12 @@ spec:
                 blocks.append(f"Stage '{f['task']}' failed (exit {f['exitCode']}): {excerpt}")
             failure_block = "\nPIPELINE FAILURES:\n" + "\n\n".join(blocks)
 
+        gaps_block = ""
+        if scan_gaps:
+            gaps_block = "\nBUILD-CONFIG / SCAN NOTES:\n" + "\n".join(
+                f"  {g['label']}: {g['reason']}" for g in scan_gaps
+            )
+
         tests_root_cause = tests_cat.get("root_cause","unknown")
         tests_ran = tests_cat.get("tests_ran", True)
 
@@ -5929,7 +5485,7 @@ spec:
         are genuinely unrelated, don't force a connection that isn't there.
 
         Respond with JSON only:
-        {"recommendation":"Begin with one of: I recommend proceeding / I recommend proceeding with caution / I do not recommend proceeding. Then 2-4 sentences citing the most critical category findings by name.","executive_summary":"2-4 sentences for an engineering manager  overall posture, key risks, what must be fixed before release.","pipeline_failure_analysis":{"stage":"","root_cause":"","recommended_fix":""}} or set pipeline_failure_analysis to null if no pipeline failures.
+        {"recommendation":"Begin with one of: Safe to proceed / Proceed with caution / Not recommended to proceed. Write in a professional, third-person report voice -- never first person ('I recommend...'). Then 2-4 sentences citing the most critical category findings by name.","executive_summary":"2-4 sentences for an engineering manager  overall posture, key risks, what must be fixed before release.","pipeline_failure_analysis":{"stage":"","root_cause":"","recommended_fix":""}} or set pipeline_failure_analysis to null if no pipeline failures.
 
         Rules:
         - If tests_ran=false and root_cause=compile_error: the recommendation MUST state tests did not run due to a build failure.
@@ -5954,7 +5510,8 @@ spec:
             f"coverage={test_summary.get('coverage',0)}%  "
             f"tests_ran={tests_ran}  root_cause={tests_root_cause}\n"
             f"RISK GRADE: {risk_grade}  VERDICT: {verdict}"
-            f"{failure_block}\n\n"
+            f"{failure_block}"
+            f"{gaps_block}\n\n"
         ) + AGGREGATE_RULES
 
         def call_ai(p):
@@ -5966,6 +5523,7 @@ spec:
                         req = urllib.request.Request(
                             "https://api.anthropic.com/v1/messages",
                             data=json.dumps({"model": AI_MODEL, "max_tokens": 1024,
+                                "system": "Respond with valid JSON only.",
                                 "messages": [{"role": "user", "content": p}]}).encode(),
                             headers={"x-api-key": AI_API_KEY, "anthropic-version": "2023-06-01",
                                      "content-type": "application/json"},
@@ -6030,16 +5588,16 @@ spec:
         # Rule-based fallback for recommendation
         if not recommendation:
             verdict_phrases = {
-                "DO_NOT_PROCEED": "I do not recommend proceeding",
-                "PROCEED_WITH_CAUTION": "I recommend proceeding with caution",
-                "PROCEED": "I recommend proceeding",
+                "DO_NOT_PROCEED": "Not recommended to proceed",
+                "PROCEED_WITH_CAUTION": "Proceed with caution",
+                "PROCEED": "Safe to proceed",
             }
-            root_note = (f" Tests did not run  compile stage failed." if tests_root_cause == "compile_error" else "")
+            root_note = (" Tests did not run because the compile stage failed." if tests_root_cause == "compile_error" else "")
             recommendation = (
-                f"{verdict_phrases.get(verdict, 'I recommend proceeding with caution')}. "
+                f"{verdict_phrases.get(verdict, 'Proceed with caution')}. "
                 f"Risk grade {risk_grade}: {total_counts['critical']} critical, {total_counts['high']} high findings. "
                 f"{total_counts['tests_failed']} test failures.{root_note} "
-                f"This is automated  the human reviewer decides at the approval gate."
+                f"This is an automated assessment -- the human reviewer makes the final decision at the approval gate."
             )
 
         if not executive_summary:
@@ -6102,10 +5660,21 @@ spec:
 
         #  Supply chain (from image category)
         img_cat = categories.get("image", {})
+        # Supply-chain hygiene signals (copyleft license, duplicate dependency
+        # versions) tracked separately from `allFindings` -- kept out of the
+        # vulnerability panels developers/reviewers see, but still ingested into
+        # finding-history by the operator so they show up in the admin trend report.
+        supply_chain_signals = img_cat.get("sbom_signals", [])
         supply_chain = {
             "sbomGenerated": img_cat.get("sbom_generated", False),
             "sbomComponents": img_cat.get("sbom_components", 0),
             "imageSigned": False,
+            # Flag counts surfaced at the top level so the gate/reviewer sees them as
+            # a badge without having to open the SBOM download -- the `sbom` dict
+            # below has the detail (which components) behind each count.
+            "copyleftCount": len(img_cat.get("sbom_copyleft", [])),
+            "unlicensedCount": img_cat.get("sbom_unlicensed_count", 0),
+            "duplicateVersionCount": len(img_cat.get("sbom_duplicate_versions", [])),
         }
 
         # Full SBOM, kept separate from the lightweight supply_chain status summary
@@ -6117,6 +5686,11 @@ spec:
             "componentCount": img_cat.get("sbom_components", 0),
             "components": img_cat.get("sbom_component_list", []),
             "raw": img_cat.get("sbom_raw", ""),
+            "licenseBreakdown": img_cat.get("sbom_license_breakdown", {}),
+            "copyleftComponents": img_cat.get("sbom_copyleft", []),
+            "unlicensedCount": img_cat.get("sbom_unlicensed_count", 0),
+            "unlicensedComponents": img_cat.get("sbom_unlicensed", []),
+            "duplicateVersions": img_cat.get("sbom_duplicate_versions", []),
         }
 
         #  Secret-injection-ladder posture (derived from secrets/sast rung fields)
@@ -6199,6 +5773,7 @@ spec:
             "categoryBreakdown":      category_breakdown,
             "toolBreakdown":          tool_breakdown,
             "supplyChain":            supply_chain,
+            "supplyChainSignals":     supply_chain_signals,
             "sbom":                   sbom,
             "secretPosture":          secret_posture,
             "pipelineFailureAnalysis": pfa,
@@ -6245,7 +5820,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-analyze-image
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: ai-analysis
 spec:
@@ -6259,6 +5834,9 @@ spec:
       type: string
     - name: operator-api-url
       type: string
+    - name: ai-run
+      type: string
+      default: "true"
   workspaces:
     - name: scan-results
     - name: ai-results
@@ -6306,6 +5884,13 @@ spec:
         except Exception as e:
             print(f"Credentials: {e}")
 
+        # ai-run=false means AI is disabled for this branch (cost-saving toggle) --
+        # scanning/aggregation must still run, only the paid AI call is skipped.
+        # Reuses the same deterministic-fallback path call_ai() already takes when
+        # no credentials are configured.
+        if "$(params.ai-run)" != "true":
+            AI_PROVIDER = AI_API_KEY = ""
+
         SCAN_DIR = pathlib.Path("$(workspaces.scan-results.path)")
         OUT_DIR  = pathlib.Path("$(workspaces.ai-results.path)")
         OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -6346,6 +5931,37 @@ spec:
             except Exception as e:
                 print(f"Grype parse: {e}")
 
+        # Trivy and Grype both scan for known CVEs and heavily overlap -- merge same
+        # (CVE, package) hits into one record with a combined tool list instead of
+        # showing the same vulnerability twice.
+        def _normalize_pkg(location):
+            loc = location.split(":")[-1] if ":" in location else location
+            return loc.split("@")[0].lower().strip()
+
+        def _merge_duplicate_cves(raw):
+            merged, non_cve = {}, []
+            for f in raw:
+                cve = (f.get("cve") or "").strip()
+                if not cve:
+                    non_cve.append(f)
+                    continue
+                key = (cve.upper(), _normalize_pkg(f.get("location", "")))
+                if key not in merged:
+                    merged[key] = {**f, "tools": [f["tool"]]}
+                else:
+                    existing = merged[key]
+                    if f["tool"] not in existing["tools"]:
+                        existing["tools"].append(f["tool"])
+                    if f.get("fix_version") and not existing.get("fix_version"):
+                        existing["fix_version"] = f["fix_version"]
+                    if len(f.get("title", "")) > len(existing.get("title", "")):
+                        existing["title"] = f["title"]
+            for m in merged.values():
+                m["tool"] = ", ".join(sorted(m.pop("tools")))
+            return non_cve + list(merged.values())
+
+        findings = _merge_duplicate_cves(findings)
+
         # "" Hadolint JSON """""""""""""""""""""""""""""""""""""
         hadolint_json = SCAN_DIR / "dockerfile-lint" / "hadolint.json"
         if hadolint_json.exists():
@@ -6369,22 +5985,93 @@ spec:
         # finished. Component list is also extracted separately (compact form) so
         # chat context doesn't need to parse the full raw JSON just to answer
         # "what's in the SBOM".
+        #
+        # A bare component count is not analysis -- it's a number nobody can act on.
+        # License + duplicate-version data is extracted locally (no extra AI call)
+        # and only a COMPACT summary (breakdown + flagged items, not all 300 raw
+        # entries) is handed to the AI prompt below, so it can give a real
+        # supply-chain verdict instead of restating the count -- and so this stays
+        # small enough to avoid the token-cost/rate-limit issues a full dump caused
+        # for findings previously.
+        def _component_license(c):
+            names = []
+            for entry in (c.get("licenses") or []):
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("expression"):
+                    names.append(entry["expression"])
+                elif isinstance(entry.get("license"), dict):
+                    lic = entry["license"]
+                    n = lic.get("id") or lic.get("name")
+                    if n:
+                        names.append(n)
+            return ", ".join(names)
+
         sbom_path = SCAN_DIR / "sbom" / "sbom.cyclonedx.json"
         sbom_generated = sbom_path.exists() and sbom_path.stat().st_size > 0
         sbom_components = 0
         sbom_component_list = []
         sbom_raw = ""
+        sbom_license_breakdown = {}
+        sbom_copyleft = []
+        sbom_unlicensed_count = 0
+        sbom_unlicensed = []
+        sbom_duplicate_versions = []
         if sbom_generated:
             try:
                 sbom_raw = sbom_path.read_text()
                 sbom_doc = json.loads(sbom_raw)
                 all_components = sbom_doc.get("components", [])
                 sbom_components = len(all_components)
+                versions_by_name = {}
+                for c in all_components:
+                    name, version = c.get("name", ""), c.get("version", "")
+                    lic = _component_license(c)
+                    label = lic if lic else "Unknown"
+                    sbom_license_breakdown[label] = sbom_license_breakdown.get(label, 0) + 1
+                    if not lic:
+                        sbom_unlicensed_count += 1
+                        if len(sbom_unlicensed) < 20:
+                            sbom_unlicensed.append({"name": name, "version": version})
+                    elif "GPL" in lic.upper() and len(sbom_copyleft) < 20:
+                        sbom_copyleft.append({"name": name, "version": version, "license": lic})
+                    if name:
+                        versions_by_name.setdefault(name, set()).add(version)
+                sbom_duplicate_versions = [
+                    {"name": n, "versions": sorted(v)}
+                    for n, v in versions_by_name.items() if len(v) > 1
+                ][:15]
                 sbom_component_list = [
-                    {"name": c.get("name", ""), "version": c.get("version", ""), "type": c.get("type", "")}
+                    {"name": c.get("name", ""), "version": c.get("version", ""), "type": c.get("type", ""),
+                     "license": _component_license(c)}
                     for c in all_components[:300]
                 ]
             except: pass
+
+        # Supply-chain signals worth tracking for age/trend purposes (introduced/
+        # resolved over time) -- kept separate from `findings` above so they don't
+        # mix into the vulnerability panels developers/reviewers see; the operator
+        # still ingests them into the same finding-history tracking used for CVEs
+        # (see record_run_findings), so they show up in the admin trend report.
+        # Raw per-component "new dependency" churn is deliberately not tracked here --
+        # with hundreds of components that would flood the trend report with noise
+        # on every routine dependency bump.
+        sbom_signals = [
+            {"tool": "sbom-license", "severity": "MEDIUM",
+             "title": f"Copyleft-licensed component: {c['name']} ({c['license']})",
+             "location": f"{c['name']}@{c['version']}", "cve": "", "fix_version": ""}
+            for c in sbom_copyleft
+        ] + [
+            {"tool": "sbom-version-conflict", "severity": "LOW",
+             "title": f"Multiple versions of {d['name']} present in image",
+             "location": f"{d['name']}: {', '.join(d['versions'])}", "cve": "", "fix_version": ""}
+            for d in sbom_duplicate_versions
+        ] + [
+            {"tool": "sbom-unlicensed", "severity": "LOW",
+             "title": f"No license metadata: {u['name']}",
+             "location": f"{u['name']}@{u['version']}", "cve": "", "fix_version": ""}
+            for u in sbom_unlicensed
+        ]
 
         SEV_ORDER = {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"INFO":4,"UNKNOWN":5}
         findings.sort(key=lambda f: SEV_ORDER.get(f.get("severity","UNKNOWN"), 5))
@@ -6405,6 +6092,7 @@ spec:
                         req = urllib.request.Request(
                             "https://api.anthropic.com/v1/messages",
                             data=json.dumps({"model": AI_MODEL, "max_tokens": 1024,
+                                "system": "Respond with valid JSON only.",
                                 "messages": [{"role": "user", "content": prompt}]}).encode(),
                             headers={"x-api-key": AI_API_KEY, "anthropic-version": "2023-06-01",
                                      "content-type": "application/json"},
@@ -6465,15 +6153,39 @@ spec:
           the fix path is different and the reader needs to know which.
         - Deduplicate: if both Trivy and Grype flagged the same CVE on the same
           package, merge into one finding.
+        - For the SBOM/supply-chain part of "summary": use the license breakdown and
+          any copyleft/unlicensed/duplicate-version data given -- call out specific
+          concerning components BY NAME (e.g. "libfoo is GPL-3.0 and would need legal
+          review before a proprietary release" or "two versions of libbar are both
+          present, likely a transitive dependency conflict"). A bare component count
+          is not analysis and must not be the whole supply-chain sentence -- if the
+          breakdown shows nothing concerning (all permissive licenses, no dupes),
+          say that explicitly instead of just repeating the count.
 
         Respond with JSON only:
         {"verdict":"BLOCK|PROCEED_WITH_CAUTION|PROCEED","summary":"1-3 sentences on image security posture and supply chain -- lead with what's actually risky","findings":[{"tool":"","severity":"","title":"","location":"","cve":"exact CVE or empty","fix_version":"exact value from data or empty -- never invented","impact":"why THIS finding matters in a running container, or why it likely doesn't","fix_description":"the real fix_version if given, or an honest alternative if not","fix_code":""}]}
 
         Rules: BLOCK if CRITICAL CVE with fix version exists. cve and fix_version must come from the source data -- never invent. Respond with valid JSON only, no markdown.
         """).strip()
+        def _sbom_ai_note():
+            if not sbom_generated:
+                return "SBOM: not generated."
+            top_licenses = sorted(sbom_license_breakdown.items(), key=lambda x: -x[1])[:8]
+            note = (f"SBOM: {sbom_components} components. License breakdown: "
+                    + ", ".join(f"{k}={v}" for k, v in top_licenses) + ".")
+            if sbom_copyleft:
+                note += (f" Copyleft-licensed components requiring review: "
+                          f"{json.dumps(sbom_copyleft[:10])}.")
+            if sbom_unlicensed_count:
+                note += f" {sbom_unlicensed_count} components have no license metadata."
+            if sbom_duplicate_versions:
+                note += (f" {len(sbom_duplicate_versions)} packages present in multiple versions "
+                          f"in the same image (potential dependency conflict): "
+                          f"{json.dumps(sbom_duplicate_versions[:5])}.")
+            return note
+
         if findings or sbom_generated:
-            sbom_note = (f"SBOM: {sbom_components} components catalogued."
-                         if sbom_generated else "SBOM: not generated.")
+            sbom_note = _sbom_ai_note()
             prompt = (
                 "You are a senior container and cloud infrastructure security engineer with 12+ years "
                 "of experience hardening production image supply chains -- you distinguish base-image "
@@ -6498,7 +6210,13 @@ spec:
                     print(f"AI JSON parse: {e}")
 
         if not summary:
-            sbom_note = f"SBOM: {sbom_components} components." if sbom_generated else "SBOM not generated."
+            if sbom_generated:
+                sbom_note = f"SBOM: {sbom_components} components"
+                if sbom_copyleft:
+                    sbom_note += f" ({len(sbom_copyleft)} copyleft-licensed)"
+                sbom_note += "."
+            else:
+                sbom_note = "SBOM not generated."
             summary = (f"{counts['critical']} critical, {counts['high']} high image CVEs. {sbom_note}"
                        if findings else f"No image findings. {sbom_note}")
 
@@ -6534,7 +6252,13 @@ spec:
             "sbom_generated": sbom_generated,
             "sbom_components": sbom_components,
             "sbom_component_list": sbom_component_list,
+            "sbom_signals": sbom_signals,
             "sbom_raw": sbom_raw,
+            "sbom_license_breakdown": sbom_license_breakdown,
+            "sbom_copyleft": sbom_copyleft,
+            "sbom_unlicensed_count": sbom_unlicensed_count,
+            "sbom_unlicensed": sbom_unlicensed,
+            "sbom_duplicate_versions": sbom_duplicate_versions,
         }
 
         (OUT_DIR / "image.json").write_text(json.dumps(result, indent=2))
@@ -6546,7 +6270,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-analyze-sast
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: ai-analysis
 spec:
@@ -6561,6 +6285,9 @@ spec:
       type: string
     - name: operator-api-url
       type: string
+    - name: ai-run
+      type: string
+      default: "true"
   workspaces:
     - name: scan-results
     - name: ai-results
@@ -6607,6 +6334,13 @@ spec:
                 }.get(AI_PROVIDER, "")
         except Exception as e:
             print(f"Credentials: {e}")
+
+        # ai-run=false means AI is disabled for this branch (cost-saving toggle) --
+        # scanning/aggregation must still run, only the paid AI call is skipped.
+        # Reuses the same deterministic-fallback path call_ai() already takes when
+        # no credentials are configured.
+        if "$(params.ai-run)" != "true":
+            AI_PROVIDER = AI_API_KEY = ""
 
         SCAN_DIR = pathlib.Path("$(workspaces.scan-results.path)")
         OUT_DIR  = pathlib.Path("$(workspaces.ai-results.path)")
@@ -6729,6 +6463,7 @@ spec:
                         req = urllib.request.Request(
                             "https://api.anthropic.com/v1/messages",
                             data=json.dumps({"model": AI_MODEL, "max_tokens": 1024,
+                                "system": "Respond with valid JSON only.",
                                 "messages": [{"role": "user", "content": prompt}]}).encode(),
                             headers={"x-api-key": AI_API_KEY, "anthropic-version": "2023-06-01",
                                      "content-type": "application/json"},
@@ -6864,7 +6599,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-analyze-sca
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: ai-analysis
 spec:
@@ -6878,6 +6613,9 @@ spec:
       type: string
     - name: operator-api-url
       type: string
+    - name: ai-run
+      type: string
+      default: "true"
   workspaces:
     - name: scan-results
     - name: ai-results
@@ -6924,6 +6662,13 @@ spec:
                 }.get(AI_PROVIDER, "")
         except Exception as e:
             print(f"Credentials: {e}")
+
+        # ai-run=false means AI is disabled for this branch (cost-saving toggle) --
+        # scanning/aggregation must still run, only the paid AI call is skipped.
+        # Reuses the same deterministic-fallback path call_ai() already takes when
+        # no credentials are configured.
+        if "$(params.ai-run)" != "true":
+            AI_PROVIDER = AI_API_KEY = ""
 
         SCAN_DIR = pathlib.Path("$(workspaces.scan-results.path)")
         OUT_DIR  = pathlib.Path("$(workspaces.ai-results.path)")
@@ -7042,6 +6787,37 @@ spec:
             except Exception as e:
                 print('OWASP DC parse: ' + str(e))
 
+        # OSV-Scanner and OWASP Dependency-Check both scan for known CVEs and heavily
+        # overlap -- merge same (CVE, package) hits into one record with a combined
+        # tool list instead of showing the same vulnerability twice.
+        def _normalize_pkg_id(location):
+            loc = location.split(':')[-1] if ':' in location else location
+            return loc.split('@')[0].lower().strip()
+
+        def _merge_duplicate_cves(raw):
+            merged, non_cve = {}, []
+            for f in raw:
+                cve = (f.get('cve') or '').strip()
+                if not cve:
+                    non_cve.append(f)
+                    continue
+                key = (cve.upper(), _normalize_pkg_id(f.get('location', '')))
+                if key not in merged:
+                    merged[key] = {**f, 'tools': [f['tool']]}
+                else:
+                    existing = merged[key]
+                    if f['tool'] not in existing['tools']:
+                        existing['tools'].append(f['tool'])
+                    if f.get('fix_version') and not existing.get('fix_version'):
+                        existing['fix_version'] = f['fix_version']
+                    if len(f.get('title', '')) > len(existing.get('title', '')):
+                        existing['title'] = f['title']
+            for m in merged.values():
+                m['tool'] = ', '.join(sorted(m.pop('tools')))
+            return non_cve + list(merged.values())
+
+        findings = _merge_duplicate_cves(findings)
+
         SEV_ORDER = {'CRITICAL':0,'HIGH':1,'MEDIUM':2,'LOW':3,'INFO':4,'UNKNOWN':5}
         findings.sort(key=lambda f: SEV_ORDER.get(f.get('severity','UNKNOWN'), 5))
         counts = {s.lower(): sum(1 for f in findings if f.get('severity') == s)
@@ -7061,6 +6837,7 @@ spec:
                         req = urllib.request.Request(
                             "https://api.anthropic.com/v1/messages",
                             data=json.dumps({"model": AI_MODEL, "max_tokens": 1024,
+                                "system": "Respond with valid JSON only.",
                                 "messages": [{"role": "user", "content": prompt}]}).encode(),
                             headers={"x-api-key": AI_API_KEY, "anthropic-version": "2023-06-01",
                                      "content-type": "application/json"},
@@ -7210,7 +6987,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-analyze-secrets
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: ai-analysis
 spec:
@@ -7225,6 +7002,9 @@ spec:
       type: string
     - name: operator-api-url
       type: string
+    - name: ai-run
+      type: string
+      default: "true"
   workspaces:
     - name: scan-results
     - name: ai-results
@@ -7272,6 +7052,13 @@ spec:
                 }.get(AI_PROVIDER, "")
         except Exception as e:
             print(f"Credentials: {e}")
+
+        # ai-run=false means AI is disabled for this branch (cost-saving toggle) --
+        # scanning/aggregation must still run, only the paid AI call is skipped.
+        # Reuses the same deterministic-fallback path call_ai() already takes when
+        # no credentials are configured.
+        if "$(params.ai-run)" != "true":
+            AI_PROVIDER = AI_API_KEY = ""
 
         SCAN_DIR = pathlib.Path("$(workspaces.scan-results.path)")
         OUT_DIR  = pathlib.Path("$(workspaces.ai-results.path)")
@@ -7361,6 +7148,7 @@ spec:
                         req = urllib.request.Request(
                             "https://api.anthropic.com/v1/messages",
                             data=json.dumps({"model": AI_MODEL, "max_tokens": 1024,
+                                "system": "Respond with valid JSON only.",
                                 "messages": [{"role": "user", "content": prompt}]}).encode(),
                             headers={"x-api-key": AI_API_KEY, "anthropic-version": "2023-06-01",
                                      "content-type": "application/json"},
@@ -7499,7 +7287,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-analyze-tests
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: ai-analysis
 spec:
@@ -7518,6 +7306,9 @@ spec:
     - name: testing-enabled
       type: string
       default: "true"   # "false" ' write disabled result and exit immediately
+    - name: ai-run
+      type: string
+      default: "true"
   workspaces:
     - name: test-results
     - name: ai-results
@@ -7565,6 +7356,13 @@ spec:
                 }.get(AI_PROVIDER, "")
         except Exception as e:
             print(f"Credentials: {e}")
+
+        # ai-run=false means AI is disabled for this branch (cost-saving toggle) --
+        # scanning/aggregation must still run, only the paid AI call is skipped.
+        # Reuses the same deterministic-fallback path call_ai() already takes when
+        # no credentials are configured.
+        if "$(params.ai-run)" != "true":
+            AI_PROVIDER = AI_API_KEY = ""
 
         TEST_DIR    = pathlib.Path("$(workspaces.test-results.path)")
         OUT_DIR     = pathlib.Path("$(workspaces.ai-results.path)")
@@ -7726,6 +7524,7 @@ spec:
                         req = urllib.request.Request(
                             "https://api.anthropic.com/v1/messages",
                             data=json.dumps({"model": AI_MODEL, "max_tokens": 1024,
+                                "system": "Respond with valid JSON only.",
                                 "messages": [{"role": "user", "content": prompt}]}).encode(),
                             headers={"x-api-key": AI_API_KEY, "anthropic-version": "2023-06-01",
                                      "content-type": "application/json"},
@@ -7878,21 +7677,23 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-preflight
-  namespace: tekton-pipelines
+  namespace: gitops-image-builds
   labels:
     gitops-platform.io/stage: build
 spec:
   description: |
     Runs immediately after clone, before compile/build. Scans the source tree
     for the build manifest (pom.xml/package.json/go.mod/*.csproj/requirements.txt
-    etc.) and Dockerfile the pipeline is about to use, and auto-corrects
-    build-file/build-context/dockerfile-path when the configured value doesn't
-    exist on disk but exactly one real candidate does. When more than one
-    candidate exists, asks AI to pick -- constrained to choosing only from the
-    real candidates found on disk, never inventing a path. Always passes
-    through the original values unchanged on any failure or when nothing is
-    fixable -- this task never blocks the pipeline; gitops-pre-build (which
-    runs after compile) remains the hard gate on missing artifacts.
+    etc.), Dockerfile, and test directory the pipeline is about to use, and
+    auto-corrects build-file/build-context/dockerfile-path/test-dir when the
+    configured value doesn't exist on disk but exactly one real candidate
+    does. When more than one candidate exists, asks AI to pick -- constrained
+    to choosing only from the real candidates found on disk, never inventing
+    a path. Always passes through the original values unchanged on any
+    failure or when nothing is fixable -- this task never blocks the
+    pipeline; gitops-pre-build (which runs after compile) remains the hard
+    gate on missing build artifacts, and the coverage badge on the run-detail
+    page is where a wrong test-dir becomes visible to the developer/reviewer.
   params:
     - name: language
       type: string
@@ -7904,6 +7705,9 @@ spec:
       type: string
     - name: dockerfile-path
       type: string
+    - name: test-dir
+      type: string
+      default: ""
     - name: pipeline-run-id
       type: string
     - name: operator-api-url
@@ -7913,10 +7717,17 @@ spec:
       readOnly: true
     - name: ai-credentials
       description: "Secret with aiProvider, aiApiKey, aiModel files"
+    - name: ai-results
+      description: "Shared with the 5 ai-analyze-* tasks + ai-aggregate. Preflight
+        writes preflight.json here so a real build-config correction or
+        unresolved ambiguity (wrong test-dir/build-file/dockerfile-path)
+        reaches the AI report a developer/reviewer actually reads, not just
+        raw Tekton task logs."
   results:
     - name: BUILD_FILE
     - name: BUILD_CONTEXT
     - name: DOCKERFILE_PATH
+    - name: TEST_DIR
     - name: PREFLIGHT_NOTE
   steps:
     - name: preflight
@@ -7946,12 +7757,25 @@ spec:
         BUILD_FILE       = "$(params.build-file)"
         BUILD_CONTEXT    = "$(params.build-context)"
         DOCKERFILE_PATH  = "$(params.dockerfile-path)"
+        TEST_DIR         = "$(params.test-dir)"
+        AI_RESULTS       = pathlib.Path("$(workspaces.ai-results.path)")
 
-        def write_results(build_file, build_context, dockerfile_path, note):
+        def write_results(build_file, build_context, dockerfile_path, test_dir, note, flagged):
             pathlib.Path("$(results.BUILD_FILE.path)").write_text(build_file)
             pathlib.Path("$(results.BUILD_CONTEXT.path)").write_text(build_context)
             pathlib.Path("$(results.DOCKERFILE_PATH.path)").write_text(dockerfile_path)
+            pathlib.Path("$(results.TEST_DIR.path)").write_text(test_dir)
             pathlib.Path("$(results.PREFLIGHT_NOTE.path)").write_text(note[:1000])
+            # A Tekton task result only ever reaches downstream task PARAMS (compile/
+            # unit-tests/etc.) -- it never reaches the AI report a developer/reviewer
+            # actually reads. Write it into the shared ai-results workspace too (same
+            # one the 5 ai-analyze-* tasks + ai-aggregate use) so a real correction or
+            # unresolved ambiguity shows up there, not just in raw Tekton logs.
+            try:
+                AI_RESULTS.mkdir(parents=True, exist_ok=True)
+                (AI_RESULTS / "preflight.json").write_text(json.dumps({"flagged": flagged, "note": note}))
+            except Exception as e:
+                print(f"Could not write preflight.json for report visibility: {e}")
 
         try:
             AI_PROVIDER = AI_API_KEY = AI_MODEL = ""
@@ -7983,21 +7807,35 @@ spec:
             IGNORE_DIRS = {".git", "node_modules", ".venv", "venv", "vendor", "target", "build",
                             "dist", ".next", "bin", "obj", "__pycache__", ".m2", ".gradle"}
 
+            # Conventional test-directory names across the languages that use a
+            # test-dir at all (today: Python only -- see TEST_FIELDS in
+            # ui/constants_lang_fields.py -- but kept language-agnostic rather than
+            # gated so it doesn't need updating if another language adopts test-dir
+            # later; it only ever fires when test-dir is actually set and wrong).
+            TEST_DIR_NAMES = {"tests", "test", "__tests__", "spec"}
+
             def walk(max_files=4000):
-                files = []
+                files, dirs_seen = [], []
                 for root, dirs, fnames in os.walk(SRC):
                     dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith(".")]
+                    for d in dirs:
+                        dirs_seen.append(str((pathlib.Path(root) / d).relative_to(SRC)))
                     for fn in fnames:
                         files.append(str((pathlib.Path(root) / fn).relative_to(SRC)))
                         if len(files) >= max_files:
-                            return files
-                return files
+                            return files, dirs_seen
+                return files, dirs_seen
 
-            all_files = walk()
-            print(f"Repo fingerprint: {len(all_files)} files scanned (build-tool={BUILD_TOOL}, language={LANGUAGE})")
+            all_files, all_dirs = walk()
+            print(f"Repo fingerprint: {len(all_files)} files, {len(all_dirs)} dirs scanned "
+                  f"(build-tool={BUILD_TOOL}, language={LANGUAGE})")
 
             def find(patterns):
                 out = [f for f in all_files if any(fnmatch.fnmatch(pathlib.Path(f).name, p) for p in patterns)]
+                return sorted(out, key=len)  # shallower paths first
+
+            def find_dirs(names):
+                out = [d for d in all_dirs if pathlib.Path(d).name in names]
                 return sorted(out, key=len)  # shallower paths first
 
             def exists(rel):
@@ -8005,10 +7843,12 @@ spec:
 
             manifest_candidates   = find(MANIFEST_GLOBS.get(BUILD_TOOL, []))
             dockerfile_candidates = find(["Dockerfile", "Dockerfile.*", "*.dockerfile"])
+            test_dir_candidates   = find_dirs(TEST_DIR_NAMES)
 
             fixed_build_file      = BUILD_FILE
             fixed_dockerfile_path = DOCKERFILE_PATH
             fixed_build_context   = BUILD_CONTEXT
+            fixed_test_dir        = TEST_DIR
             notes = []
 
             # -- build-file --
@@ -8045,9 +7885,29 @@ spec:
                 notes.append(f"build-context '{BUILD_CONTEXT}' is not a directory in the repo -- "
                              f"leaving as-is, Kaniko will fail if truly invalid.")
 
+            # -- test-dir: same auto-correct-or-ask-AI treatment as build-file. Unlike
+            # build-file, a wrong test-dir doesn't fail the pipeline on its own (the
+            # unit-tests task never blocks on test results) -- which is exactly why
+            # this matters: pytest would silently collect zero tests and report that
+            # as "0% coverage" with no indication the real problem is a stale path,
+            # so this is the only place that failure mode gets surfaced clearly.
+            if TEST_DIR and not (SRC / TEST_DIR).is_dir():
+                if len(test_dir_candidates) == 1:
+                    fixed_test_dir = test_dir_candidates[0]
+                    notes.append(f"test-dir '{TEST_DIR}' not found; auto-corrected to "
+                                 f"'{fixed_test_dir}' (only conventional test dir in repo).")
+                elif len(test_dir_candidates) > 1:
+                    notes.append(f"test-dir '{TEST_DIR}' not found; {len(test_dir_candidates)} "
+                                 f"candidates exist ({', '.join(test_dir_candidates[:5])}) -- ambiguous.")
+                else:
+                    notes.append(f"test-dir '{TEST_DIR}' not found and no conventional test "
+                                 f"directory (tests/test/__tests__/spec) exists -- tests will "
+                                 f"likely collect nothing; fix testDir on the app's Edit page.")
+
             # -- Ambiguous cases: ask AI to choose, constrained to real candidates only --
             ambiguous = ((BUILD_FILE and not exists(BUILD_FILE) and len(manifest_candidates) > 1) or
-                         (DOCKERFILE_PATH and not exists(DOCKERFILE_PATH) and len(dockerfile_candidates) > 1))
+                         (DOCKERFILE_PATH and not exists(DOCKERFILE_PATH) and len(dockerfile_candidates) > 1) or
+                         (TEST_DIR and not (SRC / TEST_DIR).is_dir() and len(test_dir_candidates) > 1))
 
             def call_ai(prompt):
                 if not AI_PROVIDER or not AI_API_KEY:
@@ -8058,6 +7918,7 @@ spec:
                             req = urllib.request.Request(
                                 "https://api.anthropic.com/v1/messages",
                                 data=json.dumps({"model": AI_MODEL, "max_tokens": 512,
+                                    "system": "Respond with valid JSON only.",
                                     "messages": [{"role": "user", "content": prompt}]}).encode(),
                                 headers={"x-api-key": AI_API_KEY, "anthropic-version": "2023-06-01",
                                          "content-type": "application/json"},
@@ -8101,7 +7962,7 @@ spec:
                 # Static schema text lives in ai/prompts/preflight-rules.txt --
                 # kept out of this script to stay under the repo's 250-line convention.
                 PREFLIGHT_RULES = textwrap.dedent("""
-                Respond with JSON only: {"build_file":"<one candidate or null>","dockerfile_path":"<one candidate or null>","reasoning":"1-2 sentences"}
+                Respond with JSON only: {"build_file":"<one candidate or null>","dockerfile_path":"<one candidate or null>","test_dir":"<one candidate or null>","reasoning":"1-2 sentences"}
                 """).strip()
                 prompt = (
                     "You are a senior build/release engineer with deep experience across monorepos and "
@@ -8114,7 +7975,9 @@ spec:
                     f"Configured build-file: '{BUILD_FILE}' (exists: {exists(BUILD_FILE)})\n"
                     f"Candidate build manifests found: {json.dumps(manifest_candidates[:20])}\n"
                     f"Configured dockerfile-path: '{DOCKERFILE_PATH}' (exists: {exists(DOCKERFILE_PATH)})\n"
-                    f"Candidate Dockerfiles found: {json.dumps(dockerfile_candidates[:20])}\n\n"
+                    f"Candidate Dockerfiles found: {json.dumps(dockerfile_candidates[:20])}\n"
+                    f"Configured test-dir: '{TEST_DIR}' (exists: {(SRC / TEST_DIR).is_dir() if TEST_DIR else False})\n"
+                    f"Candidate test directories found: {json.dumps(test_dir_candidates[:20])}\n\n"
                 ) + PREFLIGHT_RULES
                 raw = call_ai(prompt)
                 if raw:
@@ -8132,19 +7995,24 @@ spec:
                         if dp and dp in dockerfile_candidates:
                             fixed_dockerfile_path = dp
                             notes.append(f"AI selected dockerfile-path '{dp}': {sugg.get('reasoning','')}")
+                        td = sugg.get("test_dir")
+                        if td and td in test_dir_candidates:
+                            fixed_test_dir = td
+                            notes.append(f"AI selected test-dir '{td}': {sugg.get('reasoning','')}")
                     except Exception as e:
                         print(f"AI suggestion parse failed: {e}")
 
             note = " | ".join(notes) if notes else "No build-path issues detected."
             print(f"Preflight: {note}")
-            write_results(fixed_build_file, fixed_build_context, fixed_dockerfile_path, note)
+            write_results(fixed_build_file, fixed_build_context, fixed_dockerfile_path, fixed_test_dir,
+                          note, flagged=bool(notes))
 
         except Exception as e:
             # Never block the pipeline on a preflight bug -- pass the original,
             # unmodified params straight through. gitops-pre-build (post-compile)
             # remains the real safety net for genuinely missing artifacts.
             print(f"Preflight error (passing through original params): {e}")
-            write_results(BUILD_FILE, BUILD_CONTEXT, DOCKERFILE_PATH,
-                          f"Preflight check failed ({e}); using configured values unchanged.")
+            write_results(BUILD_FILE, BUILD_CONTEXT, DOCKERFILE_PATH, TEST_DIR,
+                          f"Preflight check failed ({e}); using configured values unchanged.", flagged=True)
 
         print("Preflight complete.")

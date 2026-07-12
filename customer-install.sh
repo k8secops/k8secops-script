@@ -26,7 +26,6 @@ set -euo pipefail
 CHART_OCI="oci://registry-1.docker.io/k8secops/gitops-platform"
 CHART_VERSION="1.0.0"
 TEKTON_TASKS_URL="https://raw.githubusercontent.com/k8secops/k8secops-script/main/tekton-tasks.yaml"
-TEKTON_TASKS_IMAGE_BUILDS_URL="https://raw.githubusercontent.com/k8secops/k8secops-script/main/tekton-tasks-image-builds.yaml"
 
 # ── Versions ─────────────────────────────────────────────────────────────────
 TEKTON_VERSION="v1.13.0"
@@ -188,14 +187,18 @@ kubectl label namespace "$NS_TOOLING" \
   pod-security.kubernetes.io/enforce-version=latest \
   --overwrite >/dev/null
 
-# gitops-image-builds is created unconditionally (like the other namespaces
-# above) so a customer can enable imageBuildIsolation later with a plain
-# `helm upgrade --set imageBuildIsolation.enabled=true` -- no re-install
-# needed. It must stay PSA privileged even if the feature is never turned
-# on; RBAC (not PSA) is what actually restricts who can create pods here.
+# gitops-image-builds is the default namespace every app's whole pipeline
+# (every scan + the build) runs in unless spec.image.buildNamespace
+# overrides it. In-cluster image building (Kaniko) requires PSA privileged
+# -- RBAC (not PSA) is what actually restricts who can create pods here.
+# gitops-platform.io/namespace-role=app-pipeline marks this (and every
+# dynamically-provisioned namespace) as a place pipeline task pods actually
+# run -- gitops-tooling's NetworkPolicy ingress rule selects on this label
+# to let SonarQube be reached from any of them.
 kubectl label namespace "$NS_IMAGE_BUILDS" \
   app.kubernetes.io/managed-by=gitops-platform \
   app.kubernetes.io/part-of=gitops-platform \
+  gitops-platform.io/namespace-role=app-pipeline \
   pod-security.kubernetes.io/enforce=privileged \
   pod-security.kubernetes.io/enforce-version=latest \
   --overwrite >/dev/null
@@ -336,16 +339,14 @@ info "PostgreSQL ready"
 # ── Step 5: Scanner tasks ─────────────────────────────────────────────────────
 section "Step 5 — Applying 30+ security scanner tasks"
 
-kubectl apply -n "$NS_TEKTON" -f "${TEKTON_TASKS_URL}"
+# Every app's whole pipeline (every scan + the build) runs in NS_IMAGE_BUILDS
+# unless spec.image.buildNamespace overrides it -- Task objects a Pipeline
+# resolves via taskRef must physically exist in that same namespace (Tekton
+# has no cross-namespace taskRef), so this bundle (pre-rendered with
+# namespace: gitops-image-builds by package-release.py) is applied there,
+# not to NS_TEKTON (which hosts the Tekton controllers only).
+kubectl apply -n "$NS_IMAGE_BUILDS" -f "${TEKTON_TASKS_URL}"
 info "Scanner tasks applied"
-
-# Isolated-build-namespace copies of the tasks the imageBuildIsolation
-# feature's Pipeline needs (Tekton has no cross-namespace taskRef). Applied
-# unconditionally, same rationale as creating NS_IMAGE_BUILDS unconditionally
-# in Step 1 -- so enabling the feature later needs only a Helm upgrade, not
-# a re-run of this script.
-kubectl apply -n "$NS_IMAGE_BUILDS" -f "${TEKTON_TASKS_IMAGE_BUILDS_URL}"
-info "Image-build-isolation tasks applied"
 
 # ── Step 5.5: Seed NVD vulnerability database ─────────────────────────────────
 # OWASP Dependency-Check requires the NVD database. The nvd-updater CronJob
@@ -358,17 +359,17 @@ section "Step 5.5 -- Seeding OWASP NVD vulnerability database"
 NVD_UPDATER_CRONJOB="gitops-platform-nvd-updater"
 NVD_SEED_JOB="gitops-platform-nvd-seed"
 NVD_SEED_JOB="${NVD_SEED_JOB}"  # ensure variable is set for Done section
-if kubectl get cronjob "${NVD_UPDATER_CRONJOB}" -n "$NS_TEKTON" &>/dev/null; then
-  kubectl delete job "${NVD_SEED_JOB}" -n "$NS_TEKTON" --ignore-not-found &>/dev/null || true
+if kubectl get cronjob "${NVD_UPDATER_CRONJOB}" -n "$NS_IMAGE_BUILDS" &>/dev/null; then
+  kubectl delete job "${NVD_SEED_JOB}" -n "$NS_IMAGE_BUILDS" --ignore-not-found &>/dev/null || true
   kubectl create job "${NVD_SEED_JOB}" \
     --from=cronjob/"${NVD_UPDATER_CRONJOB}" \
-    -n "$NS_TEKTON" &>/dev/null
+    -n "$NS_IMAGE_BUILDS" &>/dev/null
   if [[ -n "${NVD_API_KEY:-}" ]]; then
     info "NVD seed started with API key (expect ~5 min)."
-    info "Monitor: kubectl logs -f job/${NVD_SEED_JOB} -n ${NS_TEKTON}"
+    info "Monitor: kubectl logs -f job/${NVD_SEED_JOB} -n ${NS_IMAGE_BUILDS}"
   else
     info "NVD seed running without API key (30-60 min). Set NVD_API_KEY for faster seeding."
-    info "Monitor: kubectl logs -f job/${NVD_SEED_JOB} -n ${NS_TEKTON}"
+    info "Monitor: kubectl logs -f job/${NVD_SEED_JOB} -n ${NS_IMAGE_BUILDS}"
   fi
 else
   warn "NVD updater CronJob not found -- OWASP scans will skip until database is seeded."
