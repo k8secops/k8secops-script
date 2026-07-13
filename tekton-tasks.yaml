@@ -8,7 +8,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: git-clone
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: clone
 spec:
@@ -131,7 +131,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-secrets-scan
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: secrets
 spec:
@@ -272,7 +272,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-bandit
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sast
     gitops-platform.io/language: python
@@ -334,7 +334,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-bearer
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sast
 spec:
@@ -396,7 +396,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-checkov
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sast
 spec:
@@ -481,7 +481,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-eslint-security
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sast
     gitops-platform.io/language: nodejs
@@ -559,7 +559,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-gosec
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sast
     gitops-platform.io/language: go
@@ -626,7 +626,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-language
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sast
     gitops-platform.io/role: dispatcher
@@ -673,7 +673,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-roslyn
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sast
     gitops-platform.io/language: dotnet
@@ -752,7 +752,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-semgrep
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sast
 spec:
@@ -809,7 +809,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-sonarqube-dotnet
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sast
 spec:
@@ -1004,7 +1004,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-sonarqube
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sast
 spec:
@@ -1203,7 +1203,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sast-spotbugs
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sast
     gitops-platform.io/language: java
@@ -1315,7 +1315,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sca-owasp
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sca
 spec:
@@ -1400,7 +1400,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-sca-osv
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sca
 spec:
@@ -1456,7 +1456,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-test-dotnet
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/language: dotnet
@@ -1690,7 +1690,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-test-go
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/language: go
@@ -1893,7 +1893,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-test-java
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/language: java
@@ -2126,7 +2126,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-test-nodejs
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/language: nodejs
@@ -2327,7 +2327,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-test-python
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/language: python
@@ -2535,7 +2535,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-unit-tests
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: unit-tests
     gitops-platform.io/role: dispatcher
@@ -2590,7 +2590,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-build-image-local
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: build
 spec:
@@ -2733,7 +2733,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-compile-dotnet
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: compile
 spec:
@@ -3036,7 +3036,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-compile-go
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: compile
 spec:
@@ -3220,7 +3220,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-compile-java
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: compile
 spec:
@@ -3455,7 +3455,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-compile-nodejs
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: compile
 spec:
@@ -3643,7 +3643,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-compile-python
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: compile
 spec:
@@ -3856,7 +3856,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-lang-compile
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: compile
 spec:
@@ -3973,7 +3973,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-hadolint
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: build
 spec:
@@ -4015,7 +4015,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-human-gate
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: human-gate
 spec:
@@ -4126,7 +4126,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-image-push
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: push
 spec:
@@ -4293,7 +4293,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-image-sign
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: push
 spec:
@@ -4411,7 +4411,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-scan-clamav
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: image-scan
 spec:
@@ -4501,7 +4501,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-notify-status
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: notify
 spec:
@@ -4560,7 +4560,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-pre-build
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: build
 spec:
@@ -4776,7 +4776,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-precompile
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: precompile
 spec:
@@ -4912,7 +4912,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-scan-grype
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: image-scan
 spec:
@@ -5028,7 +5028,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-scan-syft
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: sbom
 spec:
@@ -5124,7 +5124,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-scan-trivy
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: image-scan
 spec:
@@ -5209,7 +5209,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-aggregate
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: ai-analysis
 spec:
@@ -5820,7 +5820,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-analyze-image
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: ai-analysis
 spec:
@@ -6270,7 +6270,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-analyze-sast
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: ai-analysis
 spec:
@@ -6599,7 +6599,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-analyze-sca
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: ai-analysis
 spec:
@@ -6987,7 +6987,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-analyze-secrets
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: ai-analysis
 spec:
@@ -7287,7 +7287,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-analyze-tests
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: ai-analysis
 spec:
@@ -7677,7 +7677,7 @@ apiVersion: tekton.dev/v1
 kind: Task
 metadata:
   name: gitops-ai-preflight
-  namespace: gitops-image-builds
+  namespace: gitops-core
   labels:
     gitops-platform.io/stage: build
 spec:

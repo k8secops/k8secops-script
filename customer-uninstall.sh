@@ -25,7 +25,6 @@ NS_CORE="gitops-core"
 NS_TOOLING="gitops-tooling"
 NS_DB="gitops-db"
 NS_TEKTON="tekton-pipelines"
-NS_IMAGE_BUILDS="gitops-image-builds"
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()    { echo -e "${GREEN}[INFO]${NC}  $*"; }
@@ -77,23 +76,24 @@ if kubectl get deployment "${HELM_RELEASE}-operator" -n "${NS_CORE}" &>/dev/null
   info "Operator scaled to 0."
 fi
 
-# Cancel any running PipelineRuns so pods are cleaned up by Tekton
-ACTIVE=$(kubectl get pipelinerun -n "${NS_TEKTON}" \
-  -o jsonpath='{.items[?(@.status.conditions[0].reason!="Succeeded")].metadata.name}' \
+# Cancel any running PipelineRuns so pods are cleaned up by Tekton. Every
+# run now executes in its own ephemeral namespace (not NS_TEKTON, which
+# hosts the Tekton controllers only), so this searches cluster-wide rather
+# than a single fixed namespace.
+ACTIVE=$(kubectl get pipelinerun -A \
+  -o jsonpath='{range .items[?(@.status.conditions[0].reason!="Succeeded")]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
   2>/dev/null || true)
 if [[ -n "$ACTIVE" ]]; then
-  for pr in $ACTIVE; do
-    kubectl patch pipelinerun "$pr" -n "${NS_TEKTON}" \
+  while read -r pr_ns pr_name; do
+    [[ -z "$pr_ns" ]] && continue
+    kubectl patch pipelinerun "$pr_name" -n "$pr_ns" \
       --type=merge -p '{"spec":{"status":"CancelledRunFinally"}}' 2>/dev/null || true
-  done
+  done <<< "$ACTIVE"
   info "Active PipelineRuns cancelled — waiting 15s..."
   sleep 15
 else
   info "No active PipelineRuns."
 fi
-
-# Stop NVD seed job if still running
-kubectl delete job "${HELM_RELEASE}-nvd-seed" -n "${NS_TEKTON}" --ignore-not-found 2>/dev/null || true
 
 # ── Step 2: Helm uninstall ────────────────────────────────────────────────────
 section "Step 2 -- Uninstalling Helm release '${HELM_RELEASE}'"
@@ -161,9 +161,6 @@ if [[ "$PURGE" == "true" ]]; then
   kubectl delete secret gitops-db-internal      -n "${NS_DB}"   --ignore-not-found 2>/dev/null || true
 fi
 kubectl delete secret gitops-operator-token          -n "${NS_TEKTON}" --ignore-not-found 2>/dev/null || true
-kubectl delete secret "${HELM_RELEASE}-nvd-api-key"  -n "${NS_TEKTON}" --ignore-not-found 2>/dev/null || true
-# Shared NVD vulnerability database cache -- public data, re-downloadable
-kubectl delete pvc "${HELM_RELEASE}-vulndb-cache"    -n "${NS_TEKTON}" --ignore-not-found 2>/dev/null || true
 info "Platform secrets and caches removed."
 
 # ── Step 6 (--purge only): Remove everything ──────────────────────────────────
@@ -185,7 +182,18 @@ if [[ "$PURGE" == "true" ]]; then
     --ignore-not-found 2>/dev/null || true
   info "Tekton removed."
 
-  kubectl delete namespace "${NS_CORE}" "${NS_TOOLING}" "${NS_DB}" "${NS_TEKTON}" "${NS_IMAGE_BUILDS}" \
+  # Every pipeline run gets its own ephemeral namespace (created/destroyed
+  # per-run by the operator, see gitops-platform.io/ephemeral-run-namespace
+  # label) -- with the operator itself being removed, nothing is left to
+  # clean up anything stuck at the moment of uninstall, so sweep them here.
+  EPHEMERAL_NS=$(kubectl get namespace -l gitops-platform.io/ephemeral-run-namespace=true \
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+  if [[ -n "$EPHEMERAL_NS" ]]; then
+    kubectl delete namespace $EPHEMERAL_NS --ignore-not-found 2>/dev/null || true
+    info "Ephemeral run namespaces deleted: ${EPHEMERAL_NS}"
+  fi
+
+  kubectl delete namespace "${NS_CORE}" "${NS_TOOLING}" "${NS_DB}" "${NS_TEKTON}" \
     --ignore-not-found 2>/dev/null || true
   info "Platform namespaces deleted."
 fi
@@ -197,7 +205,7 @@ echo ""
 
 if [[ "$PURGE" == "false" ]]; then
   echo "  Kept (safe to reinstall over):"
-  echo "    Namespaces  : ${NS_CORE}, ${NS_TOOLING}, ${NS_DB}, ${NS_TEKTON}, ${NS_IMAGE_BUILDS}"
+  echo "    Namespaces  : ${NS_CORE}, ${NS_TOOLING}, ${NS_DB}, ${NS_TEKTON}"
   echo "    PVCs        : PostgreSQL data in ${NS_DB} (pipeline history preserved)"
   echo "    Secrets     : gitops-platform-secrets, gitops-db-internal (operator token, UI"
   echo "                  password, and DB password all reused automatically on reinstall --"

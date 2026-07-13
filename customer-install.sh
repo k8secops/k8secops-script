@@ -12,8 +12,7 @@
 #   4. Installs Sealed Secrets controller
 #   5. Installs the GitOps Platform Helm chart from OCI
 #   6. Applies all 30+ security scanner tasks
-#   7. Seeds the OWASP NVD vulnerability database (background)
-#   8. Waits until every pod is Running and Ready
+#   7. Waits until every pod is Running and Ready
 #
 # Requirements:
 #   kubectl >= 1.28  (configured against the target cluster)
@@ -32,11 +31,13 @@ TEKTON_VERSION="v1.13.0"
 SEALED_SECRETS_VERSION="2.15.0"
 
 # ── Namespace names ──────────────────────────────────────────────────────────
+# No shared/default build namespace anymore -- every pipeline run gets its
+# own fresh, ephemeral namespace, created and destroyed per-run by the
+# platform itself. Nothing to create here for that.
 NS_CORE="gitops-core"
 NS_TOOLING="gitops-tooling"
 NS_DB="gitops-db"
 NS_TEKTON="tekton-pipelines"
-NS_IMAGE_BUILDS="gitops-image-builds"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -111,22 +112,6 @@ else
   done
 fi
 
-# ── NVD API key ────────────────────────────────────────────────────────────────
-echo ""
-echo "  OWASP Dependency-Check requires the NVD vulnerability database."
-echo "  An API key reduces the initial download from 30-60 min to ~5 min."
-echo "  Get a FREE key at: https://nvd.nist.gov/developers/request-an-api-key"
-echo ""
-if [[ -z "${NVD_API_KEY:-}" ]]; then
-  read -rsp "  NVD API key (press Enter to skip — download will be slow): " NVD_API_KEY
-  echo ""
-fi
-if [[ -n "${NVD_API_KEY:-}" ]]; then
-  info "NVD API key provided — OWASP database will seed in ~5 min."
-else
-  warn "No NVD API key — OWASP seeding will take 30-60 min in the background."
-fi
-
 # ── Docker Hub credentials (for scanner image pulls) ──────────────────────────
 # Scanner images (gitleaks, trivy, grype, semgrep, etc.) are pulled by
 # Kubernetes when scheduling Tekton task pods. Without credentials, Docker Hub
@@ -177,28 +162,12 @@ info "Setup complete — proceeding with installation."
 # ── Step 1: Namespaces ────────────────────────────────────────────────────────
 section "Step 1 — Namespaces"
 
-for ns in "$NS_CORE" "$NS_TOOLING" "$NS_DB" "$NS_TEKTON" "$NS_IMAGE_BUILDS"; do
+for ns in "$NS_CORE" "$NS_TOOLING" "$NS_DB" "$NS_TEKTON"; do
   kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   info "Namespace: $ns"
 done
 
 kubectl label namespace "$NS_TOOLING" \
-  pod-security.kubernetes.io/enforce=privileged \
-  pod-security.kubernetes.io/enforce-version=latest \
-  --overwrite >/dev/null
-
-# gitops-image-builds is the default namespace every app's whole pipeline
-# (every scan + the build) runs in unless spec.image.buildNamespace
-# overrides it. In-cluster image building (Kaniko) requires PSA privileged
-# -- RBAC (not PSA) is what actually restricts who can create pods here.
-# gitops-platform.io/namespace-role=app-pipeline marks this (and every
-# dynamically-provisioned namespace) as a place pipeline task pods actually
-# run -- gitops-tooling's NetworkPolicy ingress rule selects on this label
-# to let SonarQube be reached from any of them.
-kubectl label namespace "$NS_IMAGE_BUILDS" \
-  app.kubernetes.io/managed-by=gitops-platform \
-  app.kubernetes.io/part-of=gitops-platform \
-  gitops-platform.io/namespace-role=app-pipeline \
   pod-security.kubernetes.io/enforce=privileged \
   pod-security.kubernetes.io/enforce-version=latest \
   --overwrite >/dev/null
@@ -285,8 +254,6 @@ sonarqube:
 database:
   internal:
     password: '$(yesc "${DB_PASSWORD}")'
-nvdUpdater:
-  nvdApiKey: '$(yesc "${NVD_API_KEY:-}")'
 global:
   pipelineDockerHub:
     username: '$(yesc "${DOCKERHUB_USERNAME:-}")'
@@ -339,41 +306,16 @@ info "PostgreSQL ready"
 # ── Step 5: Scanner tasks ─────────────────────────────────────────────────────
 section "Step 5 — Applying 30+ security scanner tasks"
 
-# Every app's whole pipeline (every scan + the build) runs in NS_IMAGE_BUILDS
-# unless spec.image.buildNamespace overrides it -- Task objects a Pipeline
-# resolves via taskRef must physically exist in that same namespace (Tekton
-# has no cross-namespace taskRef), so this bundle (pre-rendered with
-# namespace: gitops-image-builds by package-release.py) is applied there,
-# not to NS_TEKTON (which hosts the Tekton controllers only).
-kubectl apply -n "$NS_IMAGE_BUILDS" -f "${TEKTON_TASKS_URL}"
+# Every pipeline run now gets its own fresh, ephemeral namespace (created and
+# destroyed per-run by the platform itself, see NS_CORE's operator). Task
+# objects a Pipeline resolves via taskRef must physically exist in the same
+# namespace (Tekton has no cross-namespace taskRef); rather than pre-creating
+# them in every possible run namespace, the platform copies them from one
+# canonical source namespace (NS_CORE) into each fresh run namespace at
+# trigger time. This bundle (pre-rendered with namespace: gitops-core by
+# package-release.py) is applied to NS_CORE so that copy source exists.
+kubectl apply -n "$NS_CORE" -f "${TEKTON_TASKS_URL}"
 info "Scanner tasks applied"
-
-# ── Step 5.5: Seed NVD vulnerability database ─────────────────────────────────
-# OWASP Dependency-Check requires the NVD database. The nvd-updater CronJob
-# runs daily at 2am to keep it fresh. Trigger an immediate seed here so the
-# first pipeline run finds the database ready.
-# Set NVD_API_KEY env var before running this script for a 5-min seed instead
-# of 30-60 min:  NVD_API_KEY=<key> curl -sfL .../customer-install.sh | bash
-# Free API key: https://nvd.nist.gov/developers/request-an-api-key
-section "Step 5.5 -- Seeding OWASP NVD vulnerability database"
-NVD_UPDATER_CRONJOB="gitops-platform-nvd-updater"
-NVD_SEED_JOB="gitops-platform-nvd-seed"
-NVD_SEED_JOB="${NVD_SEED_JOB}"  # ensure variable is set for Done section
-if kubectl get cronjob "${NVD_UPDATER_CRONJOB}" -n "$NS_IMAGE_BUILDS" &>/dev/null; then
-  kubectl delete job "${NVD_SEED_JOB}" -n "$NS_IMAGE_BUILDS" --ignore-not-found &>/dev/null || true
-  kubectl create job "${NVD_SEED_JOB}" \
-    --from=cronjob/"${NVD_UPDATER_CRONJOB}" \
-    -n "$NS_IMAGE_BUILDS" &>/dev/null
-  if [[ -n "${NVD_API_KEY:-}" ]]; then
-    info "NVD seed started with API key (expect ~5 min)."
-    info "Monitor: kubectl logs -f job/${NVD_SEED_JOB} -n ${NS_IMAGE_BUILDS}"
-  else
-    info "NVD seed running without API key (30-60 min). Set NVD_API_KEY for faster seeding."
-    info "Monitor: kubectl logs -f job/${NVD_SEED_JOB} -n ${NS_IMAGE_BUILDS}"
-  fi
-else
-  warn "NVD updater CronJob not found -- OWASP scans will skip until database is seeded."
-fi
 
 # ── Step 6: Wait ──────────────────────────────────────────────────────────────
 section "Step 6 -- Waiting for all pods to be Running and Ready"
@@ -427,13 +369,11 @@ echo "    Username         : admin"
 echo "    Password         : ${SONARQUBE_PASSWORD}"
 echo ""
 echo "  ── OWASP NVD database ──────────────────────────────────"
-if [[ -n "${NVD_API_KEY:-}" ]]; then
-echo "    Status           : Seeding with API key (~5 min)"
-echo "    Monitor          : kubectl logs -f job/${NVD_SEED_JOB} -n ${NS_TEKTON}"
-else
-echo "    Status           : Seeding without API key (30-60 min background)"
-echo "    Monitor          : kubectl logs -f job/${NVD_SEED_JOB} -n ${NS_TEKTON}"
-fi
+echo "    Note             : each pipeline run's OWASP Dependency-Check scan"
+echo "                        downloads the NVD database fresh (no shared"
+echo "                        pre-seeded cache) -- expect ~5-60 min on a run's"
+echo "                        first owasp-dc scan, faster on subsequent runs"
+echo "                        within the same node's local image/layer cache."
 echo ""
 echo "  ── Save securely ───────────────────────────────────────"
 echo "    Operator API token: ${OPERATOR_API_TOKEN}"
