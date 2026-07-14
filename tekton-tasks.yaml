@@ -452,6 +452,8 @@ spec:
           --output sarif \
           --output-file-path $(workspaces.results.path)/iac \
           --soft-fail \
+          --skip-path '.*/\.terraform/.*' \
+          --skip-path '.*/\.terragrunt-cache/.*' \
           2>/dev/null || true
 
         # Checkov writes results.sarif -- rename to the configured output name
@@ -744,6 +746,83 @@ spec:
         COUNT=$(grep -E "SCS[0-9]+|CA[0-9]{4}" $(workspaces.results.path)/sast/roslyn.txt | grep -iE "error|warning" | wc -l)
         echo -n "$COUNT" > $(results.FINDING_COUNT.path)
         echo "Roslyn Security: $COUNT findings"
+
+# Source: platform/tekton/tasks/sast/rust-sast-task.yaml
+---
+# "" clippy + cargo-audit (Rust) """""""""""""""""""""""""""""
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-sast-rust
+  namespace: gitops-core
+  labels:
+    gitops-platform.io/stage: sast
+    gitops-platform.io/language: rust
+spec:
+  params:
+    - name: build-version
+      default: "1.81"
+    - name: build-file
+      default: "Cargo.toml"
+  workspaces:
+    - name: source
+    - name: results
+  results:
+    - name: FINDING_COUNT
+  steps:
+    - name: rust-sast
+      image: k8secops/k8secops:rust-$(params.build-version)-slim
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        # uid 1000 has no /etc/passwd entry -- `cargo install` and clippy's
+        # own cache have nowhere writable to land without an explicit HOME.
+        - name: HOME
+          value: "$(workspaces.results.path)/.rust-sast-home"
+      script: |
+        #!/bin/sh
+        mkdir -p "$HOME"
+        mkdir -p $(workspaces.results.path)/sast
+
+        # clippy ships with the official rust image's default toolchain
+        # (clippy-driver component) -- no install needed. --message-format
+        # json emits one JSON object per line; findings are the lines with
+        # reason=="compiler-message" and a warning/error level, so a simple
+        # grep on the level field is enough without needing jq (not present
+        # in the slim image) or python3 (also not present).
+        cargo clippy --release --manifest-path "$(params.build-file)" \
+          --message-format=json 2>/dev/null \
+          > $(workspaces.results.path)/sast/clippy.json || true
+        CLIPPY_COUNT=$(grep -o '"level":"\(warning\|error\)"' \
+          $(workspaces.results.path)/sast/clippy.json 2>/dev/null | wc -l | tr -d ' ')
+
+        # cargo-audit: known-vulnerable-crate advisories from the RustSec
+        # database, cargo's dependency-CVE equivalent of npm audit/pip-audit.
+        # Not part of the default toolchain -- installed on the fly (same
+        # tradeoff as gosec-task.yaml's `go install ...@latest`: no
+        # persistent cache workspace bound to this task, so every run
+        # re-installs).
+        cargo install cargo-audit --locked 2>/dev/null || true
+        export PATH="$HOME/.cargo/bin:$PATH"
+        cargo audit --json --file "$(dirname "$(params.build-file)")/Cargo.lock" 2>/dev/null \
+          > $(workspaces.results.path)/sast/cargo-audit.json \
+          || cargo audit --json 2>/dev/null > $(workspaces.results.path)/sast/cargo-audit.json \
+          || true
+        AUDIT_COUNT=$(grep -o '"id":"RUSTSEC-[0-9-]*"' \
+          $(workspaces.results.path)/sast/cargo-audit.json 2>/dev/null | wc -l | tr -d ' ')
+
+        COUNT=$((CLIPPY_COUNT + AUDIT_COUNT))
+        echo -n "$COUNT" > $(results.FINDING_COUNT.path)
+        echo "clippy: $CLIPPY_COUNT findings, cargo-audit: $AUDIT_COUNT advisories (total $COUNT)"
+        echo "Reports: sast/clippy.json, sast/cargo-audit.json"
 
 # Source: platform/tekton/tasks/sast/semgrep-task.yaml
 ---
@@ -1245,32 +1324,59 @@ spec:
         CACHE="/tmp/spotbugs-cache"
         mkdir -p "$RESULTS" "$CACHE"
 
-        # Compile -- skip tests, quiet
+        # Compile -- skip tests, quiet. Each build tool's actual logic lives
+        # in its own small, focused script under scripts/java/.
         BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
-        if [ "$BUILD_TOOL" = "maven" ]; then
-          EXTRA=""
-          if [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "pom.xml" ]; then
-            EXTRA="-f $BUILD_FILE"
-          fi
-          mvn compile -DskipTests -B -q $EXTRA 2>&1 || {
-            echo "Maven compile failed -- skipping SpotBugs"
-            echo -n "0" > $(results.FINDING_COUNT.path)
-            exit 0
-          }
-          CLASS_DIRS=$(find . -type d -name "classes" -path "*/target/*" 2>/dev/null | head -5 | tr '\n' ' ')
-        else
-          EXTRA=""
-          if [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "build.gradle" ]; then
-            EXTRA="-b $BUILD_FILE"
-          fi
-          ./gradlew classes -q $EXTRA 2>&1 || {
-            echo "Gradle classes failed -- skipping SpotBugs"
-            echo -n "0" > $(results.FINDING_COUNT.path)
-            exit 0
-          }
-          CLASS_DIRS=$(find . -type d -name "main" -path "*/build/classes/java/*" 2>/dev/null | head -5 | tr '\n' ' ')
-        fi
+        case "$BUILD_TOOL" in
+          maven)
+            EXTRA=""
+            if [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "pom.xml" ]; then
+              EXTRA="-f $BUILD_FILE"
+            fi
+            mvn compile -DskipTests -B -q $EXTRA 2>&1 || {
+              echo "Maven compile failed -- skipping SpotBugs"
+              echo -n "0" > $(results.FINDING_COUNT.path)
+              exit 0
+            }
+            CLASS_DIRS=$(find . -type d -name "classes" -path "*/target/*" 2>/dev/null | head -5 | tr '\n' ' ')
+            ;;
+          ant)
+            ANT_VERSION="1.10.15"
+            ANT_HOME="/tmp/apache-ant-${ANT_VERSION}"
+            if [ ! -d "$ANT_HOME" ]; then
+              curl -sSL "https://archive.apache.org/dist/ant/binaries/apache-ant-${ANT_VERSION}-bin.tar.gz" -o /tmp/ant.tar.gz
+              tar -xzf /tmp/ant.tar.gz -C /tmp
+            fi
+            export ANT_HOME
+            export PATH="$ANT_HOME/bin:$PATH"
+            EXTRA=""
+            if [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "build.xml" ]; then
+              EXTRA="-f $BUILD_FILE"
+            fi
+            ant $EXTRA 2>&1 || {
+              echo "Ant build failed -- skipping SpotBugs"
+              echo -n "0" > $(results.FINDING_COUNT.path)
+              exit 0
+            }
+            # No standardized output path across Ant projects (unlike
+            # Maven's target/classes or Gradle's build/classes/java) --
+            # "classes" is the near-universal directory name convention.
+            CLASS_DIRS=$(find . -type d -name "classes" 2>/dev/null | head -5 | tr '\n' ' ')
+            ;;
+          *)
+            EXTRA=""
+            if [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "build.gradle" ]; then
+              EXTRA="-b $BUILD_FILE"
+            fi
+            ./gradlew classes -q $EXTRA 2>&1 || {
+              echo "Gradle classes failed -- skipping SpotBugs"
+              echo -n "0" > $(results.FINDING_COUNT.path)
+              exit 0
+            }
+            CLASS_DIRS=$(find . -type d -name "main" -path "*/build/classes/java/*" 2>/dev/null | head -5 | tr '\n' ' ')
+            ;;
+        esac
 
         if [ -z "$CLASS_DIRS" ]; then
           echo "No compiled classes found -- skipping SpotBugs"
@@ -1307,6 +1413,82 @@ spec:
         SIZE=$(du -sh "$XML_OUT" 2>/dev/null | cut -f1 || echo "0B")
         echo "Report: sast/spotbugs.xml  ($SIZE, $COUNT findings)"
 
+
+# Source: platform/tekton/tasks/sast/tflint-task.yaml
+---
+# "" tflint -- Terraform HCL linter """""""""""""""""""""""""
+# Complements checkov's security/compliance focus with HCL-level correctness
+# checks (unused variables/declarations, invalid provider attribute usage,
+# deprecated syntax, naming convention violations).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-sast-tflint
+  namespace: gitops-core
+  labels:
+    gitops-platform.io/stage: sast
+spec:
+  description: "tflint Terraform linter. MPL-2.0. No token."
+  workspaces:
+    - name: source
+    - name: results
+  results:
+    - name: FINDING_COUNT
+  steps:
+    - name: tflint
+      image: k8secops/k8secops:tflint-v0.54.0
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "200m", memory: "256Mi"}
+        limits:   {cpu: "500m", memory: "1Gi"}
+      env:
+        - name: HOME
+          value: "$(workspaces.results.path)/.tflint-home"
+      script: |
+        #!/bin/sh
+        mkdir -p "$HOME"
+        mkdir -p $(workspaces.results.path)/iac
+        OUT="$(workspaces.results.path)/iac/tflint.sarif"
+
+        echo "-- tflint scan --"
+        echo "  Directory: $(workspaces.source.path)"
+
+        # --init only fetches ruleset plugins declared in a repo's own
+        # .tflint.hcl -- a harmless no-op when no such config exists, so
+        # always safe to attempt. Never blocks the scan on network failure.
+        tflint --init 2>/dev/null || true
+
+        # --recursive is the critical flag here -- without it tflint only
+        # lints the current directory and silently misses every submodule
+        # (modules/, environments/*, etc.), which is how most real Terraform
+        # repos are actually laid out.
+        tflint --recursive --format=sarif . > "$OUT" 2>/tmp/tflint.err || true
+
+        if [ ! -s "$OUT" ]; then
+          printf '{"version":"2.1.0","runs":[]}' > "$OUT"
+        fi
+
+        COUNT=$(python3 -c "
+        import json
+        try:
+            d = json.load(open('$OUT'))
+            print(sum(len(r.get('results', [])) for r in d.get('runs', [])))
+        except Exception:
+            print(0)
+        " 2>/dev/null || echo "0")
+        echo -n "$COUNT" > $(results.FINDING_COUNT.path)
+        echo "tflint findings: $COUNT"
+        echo "Report: iac/tflint.sarif"
 
 # Source: platform/tekton/tasks/sca/sca-tasks.yaml
 ---
@@ -1466,6 +1648,8 @@ spec:
       default: "8.0"
     - name: build-file
       default: "."
+    - name: build-context
+      default: "."
     - name: coverage-threshold
       default: "80"
     - name: test-file
@@ -1542,7 +1726,7 @@ spec:
       # it only ships the 9.0 runtime. The user-configured build-version must
       # match the project's TargetFramework (e.g. 8.0 for <TargetFramework>net8.0).
       image: k8secops/k8secops:dotnet-sdk-$(params.build-version)
-      workingDir: $(workspaces.source.path)
+      workingDir: $(workspaces.source.path)/$(params.build-context)
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -1698,6 +1882,8 @@ spec:
   params:
     - name: build-version
       default: "1.22"
+    - name: build-context
+      default: "."
     - name: coverage-threshold
       default: "80"
     - name: test-pattern
@@ -1769,7 +1955,7 @@ spec:
 
     - name: test
       image: k8secops/k8secops:golang-$(params.build-version)-alpine
-      workingDir: $(workspaces.source.path)
+      workingDir: $(workspaces.source.path)/$(params.build-context)
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -1905,6 +2091,8 @@ spec:
       default: "21"
     - name: build-file
       default: pom.xml
+    - name: build-context
+      default: "."
     - name: coverage-threshold
       default: "80"
     - name: test-module
@@ -1981,7 +2169,7 @@ spec:
 
     - name: run-tests
       image: k8secops/k8secops:maven-3.9-eclipse-temurin-$(params.build-version)
-      workingDir: $(workspaces.source.path)
+      workingDir: $(workspaces.source.path)/$(params.build-context)
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -2001,29 +2189,59 @@ spec:
         BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
         TEST_MODULE="$(params.test-module)"
-        if [ "$BUILD_TOOL" = "maven" ]; then
-          F_ARG=""
-          if [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "pom.xml" ]; then
-            F_ARG="-f $BUILD_FILE"
-          fi
-          # For multi-module projects, run tests only in the specified module
-          if [ -n "$TEST_MODULE" ]; then
-            mvn test -pl "$TEST_MODULE" -Dmaven.test.failure.ignore=true -B $F_ARG 2>&1 | tee /tmp/mvn-out.txt || true
-            mvn jacoco:report -pl "$TEST_MODULE" -B $F_ARG 2>/dev/null || true
-          else
-            mvn test -Dmaven.test.failure.ignore=true -B $F_ARG 2>&1 | tee /tmp/mvn-out.txt || true
-            mvn jacoco:report -B $F_ARG 2>/dev/null || true
-          fi
-        else
-          ARGS="build test jacocoTestReport"
-          if [ -n "$TEST_MODULE" ]; then
-            ARGS=":${TEST_MODULE}:test :${TEST_MODULE}:jacocoTestReport"
-          fi
-          if [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "build.gradle" ]; then
-            ARGS="$ARGS -b $BUILD_FILE"
-          fi
-          ./gradlew $ARGS 2>&1 | tee /tmp/gradle-out.txt || true
-        fi
+        # Each build tool's actual logic lives in its own small, focused
+        # script under scripts/java/ -- open exactly the one you need to
+        # change, nothing else.
+        case "$BUILD_TOOL" in
+          maven)
+            # Prefer the Maven Wrapper if the project ships one -- same
+            # preference compile-java-task.yaml already applies. Without this,
+            # a project pinned to a specific Maven version via mvnw could
+            # compile with one Maven version and test with a different
+            # system-installed one.
+            MVN="mvn"
+            [ -x "./mvnw" ] && MVN="./mvnw" && echo "  (using Maven Wrapper)"
+            F_ARG=""
+            if [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "pom.xml" ]; then
+              F_ARG="-f $BUILD_FILE"
+            fi
+            # For multi-module projects, run tests only in the specified module
+            if [ -n "$TEST_MODULE" ]; then
+              $MVN test -pl "$TEST_MODULE" -Dmaven.test.failure.ignore=true -B $F_ARG 2>&1 | tee /tmp/mvn-out.txt || true
+              $MVN jacoco:report -pl "$TEST_MODULE" -B $F_ARG 2>/dev/null || true
+            else
+              $MVN test -Dmaven.test.failure.ignore=true -B $F_ARG 2>&1 | tee /tmp/mvn-out.txt || true
+              $MVN jacoco:report -B $F_ARG 2>/dev/null || true
+            fi
+            ;;
+          ant)
+            ANT_VERSION="1.10.15"
+            ANT_HOME="/tmp/apache-ant-${ANT_VERSION}"
+            if [ ! -d "$ANT_HOME" ]; then
+              curl -sSL "https://archive.apache.org/dist/ant/binaries/apache-ant-${ANT_VERSION}-bin.tar.gz" -o /tmp/ant.tar.gz
+              tar -xzf /tmp/ant.tar.gz -C /tmp
+            fi
+            export ANT_HOME
+            export PATH="$ANT_HOME/bin:$PATH"
+            F_ARG=""
+            [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "build.xml" ] && F_ARG="-f $BUILD_FILE"
+            # "test" is the near-universal JUnit-ant-task target name by
+            # convention (no standardized lifecycle to rely on, unlike
+            # Maven/Gradle) -- best-effort, same as everything else here.
+            echo "  Ant: running 'test' target"
+            ant test $F_ARG 2>&1 | tee /tmp/ant-out.txt || true
+            ;;
+          *)
+            ARGS="build test jacocoTestReport"
+            if [ -n "$TEST_MODULE" ]; then
+              ARGS=":${TEST_MODULE}:test :${TEST_MODULE}:jacocoTestReport"
+            fi
+            if [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "build.gradle" ]; then
+              ARGS="$ARGS -b $BUILD_FILE"
+            fi
+            ./gradlew $ARGS 2>&1 | tee /tmp/gradle-out.txt || true
+            ;;
+        esac
         find . -name "TEST-*.xml" -exec cp {} $(workspaces.results.path)/tests/ \; 2>/dev/null || true
         find . -name "jacoco.xml" -exec cp {} $(workspaces.results.path)/tests/coverage.xml \; 2>/dev/null || true
 
@@ -2138,6 +2356,8 @@ spec:
       default: "20"
     - name: build-file
       default: package.json
+    - name: build-context
+      default: "."
     - name: coverage-threshold
       default: "80"
     - name: test-script
@@ -2209,7 +2429,7 @@ spec:
 
     - name: test
       image: k8secops/k8secops:node-$(params.build-version)-alpine
-      workingDir: $(workspaces.source.path)
+      workingDir: $(workspaces.source.path)/$(params.build-context)
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -2229,7 +2449,27 @@ spec:
         [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
         mkdir -p "$HOME"
         BUILD_TOOL="$(params.build-tool)"
-        ${BUILD_TOOL} ci --silent 2>/dev/null || ${BUILD_TOOL} install --silent
+
+        # Mirror compile-nodejs-task.yaml's own per-tool branching (including
+        # `corepack enable` for pnpm, which is not preinstalled in the plain
+        # node-alpine image the way yarn classic is) instead of blindly
+        # calling "$BUILD_TOOL ci" -- neither yarn nor pnpm actually has a
+        # "ci" subcommand, and pnpm has no binary at all here without corepack.
+        # Each build tool's actual logic lives in its own small, focused
+        # script under scripts/nodejs/.
+        case "$BUILD_TOOL" in
+          pnpm)
+            corepack enable
+            pnpm install --frozen-lockfile --silent 2>/dev/null || pnpm install --silent
+            ;;
+          yarn)
+            corepack enable
+            yarn install --frozen-lockfile --silent 2>/dev/null || yarn install --silent
+            ;;
+          *)
+            npm ci --silent 2>/dev/null || npm install --silent
+            ;;
+        esac
 
         mkdir -p $(workspaces.results.path)/tests
 
@@ -2339,6 +2579,8 @@ spec:
       default: "3.12"
     - name: build-file
       default: requirements.txt
+    - name: build-context
+      default: "."
     - name: coverage-threshold
       default: "80"
     - name: test-dir
@@ -2410,7 +2652,7 @@ spec:
 
     - name: test
       image: k8secops/k8secops:python-$(params.build-version)-slim
-      workingDir: $(workspaces.source.path)
+      workingDir: $(workspaces.source.path)/$(params.build-context)
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -2429,21 +2671,93 @@ spec:
         #!/bin/bash
         [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
         mkdir -p "$HOME"
-        pip install --quiet --user pytest pytest-cov --break-system-packages
+        export PATH="$HOME/.local/bin:$PATH"
 
+        BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
-        if [ -f "$BUILD_FILE" ]; then pip install --quiet --user -r "$BUILD_FILE" --break-system-packages 2>/dev/null || true; fi
-        if [ -f "pyproject.toml" ]; then pip install --quiet --user -e ".[test]" --break-system-packages 2>/dev/null || true; fi
+        BUILD_CONTEXT="$(params.build-context)"
+
+        # ai-preflight computes build-file/test-dir relative to the REPO
+        # ROOT (it validates against the whole-repo file tree), but this
+        # step's workingDir is repo-root/build-context (to land in the same
+        # directory compile installed into). Strip a leading build-context/
+        # prefix so a value like build-context=operator, test-dir=operator/tests
+        # doesn't double-join into operator/operator/tests, which never exists.
+        _strip_ctx() {
+          # Strip a trailing slash first -- build-context can arrive as
+          # either "operator" or "operator/" (ai-preflight passes it through
+          # verbatim from the app's configured value), and a bare "/*" glob
+          # against an already-slash-terminated prefix never matches.
+          ctx="${BUILD_CONTEXT%/}"
+          if [ -n "$ctx" ] && [ "$ctx" != "." ]; then
+            case "$1" in
+              "$ctx"/*) echo "${1#"$ctx"/}" ;;
+              *) echo "$1" ;;
+            esac
+          else
+            echo "$1"
+          fi
+        }
+        BUILD_FILE="$(_strip_ctx "$BUILD_FILE")"
+
+        # Reuse the vendor venv compile already built -- poetry/pdm/pipenv/uv
+        # all install real dependencies into it, not just plain pip, and
+        # re-installing from scratch here with bare pip would silently drop
+        # whichever of those four tools the app actually uses (none of their
+        # install commands were ever repeated in this task before). Same
+        # shared "source" workspace and same build-context-joined workingDir
+        # as compile, so ./vendor is exactly where compile left it.
+        if [ -f ./vendor/bin/activate ]; then
+          . ./vendor/bin/activate
+          pip install --quiet pytest pytest-cov
+        else
+          echo "No ./vendor venv found from compile -- installing fresh (fallback)"
+          pip install --quiet --user pytest pytest-cov --break-system-packages
+          # Each build tool's actual install logic lives in its own small,
+          # focused script under scripts/python/ -- open exactly the one
+          # you need to change, nothing else.
+          case "$BUILD_TOOL" in
+            poetry)
+              pip install --quiet --user poetry --break-system-packages
+              poetry install --no-interaction --quiet
+              ;;
+            pdm)
+              pip install --quiet --user pdm --break-system-packages
+              pdm install --no-self --quiet 2>/dev/null || pdm install --quiet
+              ;;
+            pipenv)
+              pip install --quiet --user pipenv --break-system-packages
+              PIPENV_VENV_IN_PROJECT=0 pipenv install --deploy --quiet
+              ;;
+            uv)
+              pip install --quiet --user uv --break-system-packages
+              uv pip install --system -r "${BUILD_FILE:-requirements.txt}"
+              ;;
+            *)
+              if [ -f "$BUILD_FILE" ]; then
+                pip install --quiet --user -r "$BUILD_FILE" --break-system-packages 2>/dev/null || true
+              fi
+              ;;
+          esac
+          if [ -f "pyproject.toml" ]; then pip install --quiet --user -e ".[test]" --break-system-packages 2>/dev/null || true; fi
+        fi
+
         # Test-only deps (mocking libs, etc.) declared separately from the
         # runtime build file -- same directory, requirements-dev.txt by
         # convention. Best-effort like the installs above: silently no-ops
         # for apps that don't split their deps this way.
         DEV_FILE="$(dirname "$BUILD_FILE")/requirements-dev.txt"
-        if [ -f "$DEV_FILE" ]; then pip install --quiet --user -r "$DEV_FILE" --break-system-packages 2>/dev/null || true; fi
+        if [ -f "$DEV_FILE" ]; then
+          if [ -n "$VIRTUAL_ENV" ]; then
+            pip install --quiet -r "$DEV_FILE" 2>/dev/null || true
+          else
+            pip install --quiet --user -r "$DEV_FILE" --break-system-packages 2>/dev/null || true
+          fi
+        fi
 
         mkdir -p $(workspaces.results.path)/tests
         # Use test-dir if provided, otherwise pytest auto-discovers from repo root
-        TEST_DIR="$(params.test-dir)"
+        TEST_DIR="$(_strip_ctx "$(params.test-dir)")"
         TEST_DIR="${TEST_DIR:-.}"
         python -m pytest \
           --junitxml=$(workspaces.results.path)/tests/junit.xml \
@@ -2527,6 +2841,188 @@ spec:
         else:
             print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
+
+# Source: platform/tekton/tasks/tests/test-rust-task.yaml
+---
+# "" Rust Unit Tests """""""""""""""""""""""""""""""""""""""
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-test-rust
+  namespace: gitops-core
+  labels:
+    gitops-platform.io/stage: unit-tests
+    gitops-platform.io/language: rust
+spec:
+  params:
+    - name: build-version
+      default: "1.81"
+    - name: build-context
+      default: "."
+    - name: build-file
+      default: "Cargo.toml"
+    - name: coverage-threshold
+      default: "80"
+    - name: test-pattern
+      default: "./..."
+      description: "Optional 'cargo test <filter>' substring. The shared default './...' is Go's convention, not Rust's -- treated as 'no filter' below."
+    - name: pipeline-run-id
+      type: string
+    - name: operator-api-url
+      type: string
+      default: "http://gitops-operator.gitops-core.svc.cluster.local:8080"
+  workspaces:
+    - name: source
+    - name: results
+    - name: extra-test-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} for this app's declared test-env-var credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared external-service credentials (DB/Redis/Kafka/curl-scp-wget targets etc.), shared with the compile task. Absent for apps with none."
+  results:
+    - name: TESTS_PASSED
+    - name: TESTS_FAILED
+    - name: COVERAGE_PCT
+  steps:
+    - name: export-extra-env
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        ENVFILE="$(workspaces.results.path)/.extra-env"
+        : > "$ENVFILE"
+        if [ "$(workspaces.extra-test-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-test-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+        if [ "$(workspaces.extra-service-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-service-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+
+    - name: test
+      image: k8secops/k8secops:rust-$(params.build-version)-slim
+      workingDir: $(workspaces.source.path)/$(params.build-context)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.results.path)/.rust-home"
+      script: |
+        #!/bin/sh
+        [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
+        mkdir -p "$HOME/.cargo"
+        export CARGO_HOME="$HOME/.cargo"
+        mkdir -p $(workspaces.results.path)/tests
+
+        # Same repo-root-relative -> build-context-relative fix as compile-rust-task.yaml.
+        BUILD_FILE="$(params.build-file)"
+        BUILD_CONTEXT="$(params.build-context)"
+        case "$BUILD_CONTEXT" in
+          .|"") : ;;
+          *) BUILD_FILE="${BUILD_FILE#"$BUILD_CONTEXT"/}" ;;
+        esac
+
+        # test-pattern's shared Pipeline-level default ("./...") is Go's
+        # convention and means nothing to cargo -- treat it (and an empty
+        # value) as "run everything", otherwise pass it through as cargo's
+        # own substring test filter.
+        FILTER="$(params.test-pattern)"
+        if [ "$FILTER" = "./..." ] || [ -z "$FILTER" ]; then
+          cargo test --release --manifest-path "$BUILD_FILE" 2>&1 | tee $(workspaces.results.path)/tests/output.txt || true
+        else
+          cargo test --release --manifest-path "$BUILD_FILE" -- "$FILTER" 2>&1 | tee $(workspaces.results.path)/tests/output.txt || true
+        fi
+
+        # cargo has no built-in JUnit output and no non-root-container-safe
+        # coverage tool (cargo-tarpaulin/grcov need ptrace or nightly
+        # instrumentation, unreliable under a restricted PSA pod) -- parse
+        # pass/fail counts from cargo test's own "test result: ok. N passed;
+        # M failed; ..." summary lines instead (one per test binary; a crate
+        # with multiple integration-test binaries prints several).
+        PASSED=$(grep -oE 'test result: [a-zA-Z]+\. [0-9]+ passed' $(workspaces.results.path)/tests/output.txt \
+                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                   | awk '{s+=$1} END {print s+0}')
+        FAILED=$(grep -oE '[0-9]+ failed' $(workspaces.results.path)/tests/output.txt \
+                   | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')
+
+        echo -n "$PASSED" > $(results.TESTS_PASSED.path)
+        echo -n "$FAILED" > $(results.TESTS_FAILED.path)
+        # Coverage isn't collected for Rust (see comment above) -- 0.0 is
+        # reported with threshold overridden to 0 in check-and-notify below
+        # so this reads as "not measured", not "0% covered".
+        echo -n "0.0" > $(results.COVERAGE_PCT.path)
+        echo "Rust tests: $PASSED passed, $FAILED failed (coverage not collected)"
+
+    - name: check-and-notify
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: OPERATOR_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gitops-operator-token
+              key: operatorApiToken
+      script: |
+        #!/usr/bin/env python3
+        import json, urllib.request, os
+        passed    = int(open("$(results.TESTS_PASSED.path)").read().strip() or "0")
+        failed    = int(open("$(results.TESTS_FAILED.path)").read().strip() or "0")
+        # threshold forced to 0 (not $(params.coverage-threshold)) -- coverage
+        # is never measured for Rust, so a nonzero threshold would show every
+        # run as "below threshold" regardless of actual test health.
+        payload = json.dumps({"runId": "$(params.pipeline-run-id)", "coveragePct": 0.0,
+            "threshold": 0, "passed": failed == 0,
+            "testsPassed": passed, "testsFailed": failed}).encode()
+        token = os.environ.get("OPERATOR_API_TOKEN", "")
+        headers = {"Content-Type": "application/json"}
+        if token: headers["Authorization"] = f"Bearer {token}"
+        try:
+            urllib.request.urlopen(urllib.request.Request(
+                "$(params.operator-api-url)/api/v1/pipelines/$(params.pipeline-run-id)/coverage",
+                data=payload, headers=headers, method="POST"), timeout=10)
+        except Exception as e:
+            print(f"Coverage notify failed (non-fatal): {e}")
+        # Never fail the Tekton task/pipeline on test results -- the human
+        # gate is where a developer/reviewer decides what to do with failures.
+        if failed > 0:
+            print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
+        else:
+            print(f"PASS: {passed} tests")
 
 # Source: platform/tekton/tasks/tests/unit-tests-task.yaml
 ---
@@ -3014,8 +3510,41 @@ spec:
           dotnet restore "$BUILD_FILE"
           echo """ dotnet build: $BUILD_FILE """
           dotnet build "$BUILD_FILE" -c Release --no-restore
-          echo """ dotnet publish: $BUILD_FILE -> $OUT_DIR """
-          dotnet publish "$BUILD_FILE" -c Release --no-build -o "$OUT_DIR"
+
+          case "$BUILD_FILE" in
+            *.sln)
+              # `dotnet publish` does not support solution files (a documented CLI
+              # limitation) -- restore/build above already work fine against the
+              # .sln, but publish needs a single project. Find the one executable
+              # project the solution references (Sdk="Microsoft.NET.Sdk.Web" covers
+              # ASP.NET Core apps, which rarely set OutputType explicitly) and
+              # publish that instead of guessing.
+              echo """ dotnet publish: $BUILD_FILE is a solution -- locating its publishable project """
+              SLN_DIR="$(dirname "$BUILD_FILE")"
+              CANDIDATES=""
+              for proj in $(dotnet sln "$BUILD_FILE" list 2>/dev/null | tail -n +3); do
+                PROJ_PATH="$SLN_DIR/$proj"
+                [ -f "$PROJ_PATH" ] || continue
+                if grep -qE 'Sdk="Microsoft\.NET\.Sdk\.Web"|<OutputType>\s*Exe\s*</OutputType>' "$PROJ_PATH" 2>/dev/null; then
+                  CANDIDATES="${CANDIDATES}${PROJ_PATH}
+        "
+                fi
+              done
+              CANDIDATE_COUNT=$(printf '%s' "$CANDIDATES" | grep -c . || true)
+              if [ "$CANDIDATE_COUNT" -eq 1 ]; then
+                PUBLISH_TARGET=$(printf '%s' "$CANDIDATES" | head -1)
+                echo """ Publishing solution's single executable project: $PUBLISH_TARGET """
+                dotnet publish "$PUBLISH_TARGET" -c Release --no-build -o "$OUT_DIR"
+              else
+                echo "ERROR: could not identify a single publishable project (Sdk.Web or OutputType=Exe) in $BUILD_FILE -- found $CANDIDATE_COUNT candidate(s). Set buildFile to the specific .csproj to publish instead of the .sln." >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo """ dotnet publish: $BUILD_FILE -> $OUT_DIR """
+              dotnet publish "$BUILD_FILE" -c Release --no-build -o "$OUT_DIR"
+              ;;
+          esac
         else
           echo """ dotnet restore """
           dotnet restore
@@ -3408,17 +3937,21 @@ spec:
 
         mkdir -p "$HOME/.m2" "$GRADLE_USER_HOME"
 
-        # Use persistent cache PVC if mounted, otherwise fall back to source workspace
-        if [ "$(workspaces.maven-cache.bound)" = "true" ]; then
-          MVN_REPO="$(workspaces.maven-cache.path)/repository"
-          mkdir -p "$MVN_REPO"
-        else
-          MVN_REPO="$(workspaces.source.path)/.m2/repository"
-        fi
-        MVN_FLAGS="-Dmaven.repo.local=$MVN_REPO -DskipTests -B"
-
+        # Each build tool's actual logic lives in its own small, focused
+        # script under scripts/java/ -- open exactly the one you need to
+        # change, nothing else. Only this shared preamble (params, HOME/
+        # CA-trust setup) lives in the Task YAML itself.
         case "$BUILD_TOOL" in
           maven)
+            # Use persistent cache PVC if mounted, otherwise fall back to source workspace
+            if [ "$(workspaces.maven-cache.bound)" = "true" ]; then
+              MVN_REPO="$(workspaces.maven-cache.path)/repository"
+              mkdir -p "$MVN_REPO"
+            else
+              MVN_REPO="$(workspaces.source.path)/.m2/repository"
+            fi
+            MVN_FLAGS="-Dmaven.repo.local=$MVN_REPO -DskipTests -B"
+
             EXTRA=""
             [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "pom.xml" ] && EXTRA="-f $BUILD_FILE"
             # Prefer Maven Wrapper if the project ships one
@@ -3441,6 +3974,35 @@ spec:
             [ -x "./gradlew" ] && GRADLE="./gradlew" && echo "  (using Gradle Wrapper)"
             $GRADLE assemble $EXTRA
             find . -name "*.jar" -o -name "*.war" 2>/dev/null \
+              | grep -v "/test" | sort \
+              | while read f; do echo "  $(du -sh "$f" | cut -f1)  $f"; done
+            ;;
+          ant)
+            # Ant has no lifecycle plugin repository the way Maven/Gradle
+            # do -- it's a self-contained JAR-based tool, so it's simplest
+            # to just download it here rather than bake a 4th build-tool
+            # image. Pinned to a fixed version + archive.apache.org (the
+            # stable, non-mirror-redirected URL) for reproducibility.
+            ANT_VERSION="1.10.15"
+            ANT_HOME="/tmp/apache-ant-${ANT_VERSION}"
+            if [ ! -d "$ANT_HOME" ]; then
+              echo "  Downloading Apache Ant ${ANT_VERSION}..."
+              curl -sSL "https://archive.apache.org/dist/ant/binaries/apache-ant-${ANT_VERSION}-bin.tar.gz" -o /tmp/ant.tar.gz
+              tar -xzf /tmp/ant.tar.gz -C /tmp
+            fi
+            export ANT_HOME
+            export PATH="$ANT_HOME/bin:$PATH"
+            EXTRA=""
+            [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "build.xml" ] && EXTRA="-f $BUILD_FILE"
+            # No standardized "skip tests" flag across Ant projects the way
+            # Maven/Gradle have one -- runs the build.xml's own default
+            # target, which is the only universal entry point every valid
+            # Ant project defines.
+            echo """ Ant: building (default target) """
+            ant $EXTRA
+            echo ""
+            echo """ Artifacts produced: """
+            find . -name "*.jar" -o -name "*.war" -o -name "*.ear" 2>/dev/null \
               | grep -v "/test" | sort \
               | while read f; do echo "  $(du -sh "$f" | cut -f1)  $f"; done
             ;;
@@ -3617,12 +4179,16 @@ spec:
         fi
         mkdir -p "$npm_config_cache"
 
+        # Each build tool's actual logic lives in its own small, focused
+        # script under scripts/nodejs/ -- open exactly the one you need to
+        # change, nothing else.
         case "$BUILD_TOOL" in
-          npm)
-            npm install --silent
-            npm run build --if-present
-            ;;
           yarn)
+            # corepack enable makes `yarn` respect a project's pinned
+            # packageManager version (Yarn Berry / 2+) instead of silently
+            # falling back to the classic Yarn 1.x bundled in the base
+            # image -- same reason pnpm needs it below.
+            corepack enable
             yarn install --frozen-lockfile --silent
             yarn build 2>/dev/null || true
             ;;
@@ -3810,23 +4376,36 @@ spec:
         python -m venv ./vendor
         . ./vendor/bin/activate
 
-        if [ -f "$BUILD_FILE" ] && [ "$BUILD_TOOL" = "pip" ]; then
-          pip install -r "$BUILD_FILE" --quiet
-        elif [ "$BUILD_TOOL" = "poetry" ]; then
-          pip install poetry --quiet
-          poetry install --no-interaction --quiet
-        elif [ "$BUILD_TOOL" = "pdm" ]; then
-          pip install pdm --quiet
-          pdm install --no-self 2>/dev/null || pdm install
-        elif [ "$BUILD_TOOL" = "pipenv" ]; then
-          pip install pipenv --quiet
-          PIPENV_VENV_IN_PROJECT=0 pipenv install --deploy --quiet
-        elif [ "$BUILD_TOOL" = "uv" ]; then
-          pip install uv --quiet
-          uv pip install -r "${BUILD_FILE:-requirements.txt}"
-        elif [ -f "requirements.txt" ]; then
-          pip install -r requirements.txt --quiet --no-warn-script-location
-        fi
+        # Each build tool's actual install logic lives in its own small,
+        # focused script under scripts/python/ -- open exactly the one you
+        # need to change, nothing else.
+        case "$BUILD_TOOL" in
+          poetry)
+            pip install poetry --quiet
+            poetry install --no-interaction --quiet
+            ;;
+          pdm)
+            pip install pdm --quiet
+            pdm install --no-self 2>/dev/null || pdm install
+            ;;
+          pipenv)
+            pip install pipenv --quiet
+            PIPENV_VENV_IN_PROJECT=0 pipenv install --deploy --quiet
+            ;;
+          uv)
+            pip install uv --quiet
+            uv pip install -r "${BUILD_FILE:-requirements.txt}"
+            ;;
+          *)
+            # Also the fallback for any unrecognized/unset build-tool value -- same
+            # behavior the original inline chain had.
+            if [ -f "$BUILD_FILE" ]; then
+              pip install -r "$BUILD_FILE" --quiet
+            elif [ -f "requirements.txt" ]; then
+              pip install -r requirements.txt --quiet --no-warn-script-location
+            fi
+            ;;
+        esac
         deactivate
 
         # Syntax validation -- catches import errors and syntax mistakes early.
@@ -3845,6 +4424,178 @@ spec:
           && echo "All .py files syntax-valid"
 
         echo """ Python compile complete -- vendor/ ready for Dockerfile COPY """
+
+# Source: platform/tekton/tasks/build/compile-rust-task.yaml
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-compile-rust
+  namespace: gitops-core
+  labels:
+    gitops-platform.io/stage: compile
+spec:
+  description: "Rust compile -- cargo build --release. Validates compilation before image build."
+  params:
+    - name: build-tool
+      default: "cargo"
+    - name: build-version
+      default: "1.81"
+    - name: build-file
+      default: "Cargo.toml"
+    - name: build-context
+      default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
+  workspaces:
+    - name: source
+    - name: cargo-cache
+      optional: true
+      description: "Persistent Cargo registry/git cache (~/.cargo/registry, ~/.cargo/git). Shared across runs to avoid re-downloading crates."
+    - name: extra-build-creds
+      optional: true
+      description: "Consolidated Secret of {name}-token keys for this app's declared build-artifact-repo credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
+  steps:
+    # Generic pattern matching go/nodejs's own materialize-build-creds step --
+    # writes Cargo's modern, stable per-registry auth file
+    # (~/.cargo/credentials.toml, [registries.<name>] token = "...") rather
+    # than the older CARGO_REGISTRIES_*_TOKEN env-var convention, so the
+    # registry name comes from the credential's own `name`, not a
+    # per-registry env var this task would have to synthesize.
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/usr/bin/env python3
+        import json, os, pathlib
+
+        manifest = json.loads('''$(params.extra-creds-manifest)''')
+        creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
+        home = pathlib.Path(os.environ["HOME"])
+        cargo_home = home / ".cargo"
+        cargo_home.mkdir(parents=True, exist_ok=True)
+
+        if not manifest:
+            print("No extra build-artifact-repo credentials declared -- skipping")
+        else:
+            lines = []
+            for cred in manifest:
+                name = cred["name"]
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                lines.append(f'[registries.{name}]\ntoken = "{token}"')
+            (cargo_home / "credentials.toml").write_text("\n".join(lines) + "\n")
+            print(f"Wrote {len(manifest)} Cargo registry credential(s) to {cargo_home}/credentials.toml")
+
+        # Generic, identical for every language: export this app's declared
+        # external-service credentials as a sourceable env file. No-op when
+        # the workspace isn't bound or no such credentials declared.
+        svc_lines: list[str] = []
+        for raw_ws_path in ("$(workspaces.extra-service-creds.path)",
+                             "$(workspaces.extra-generic-build-creds.path)"):
+            if not raw_ws_path:
+                continue
+            svc_dir = pathlib.Path(raw_ws_path)
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+
+    - name: compile
+      image: k8secops/k8secops:rust-$(params.build-version)-slim
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)/$(params.build-context)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "1000m", memory: "1Gi"}
+        limits:   {cpu: "4000m", memory: "4Gi"}
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/bin/sh
+        set -e
+        echo """ Rust compile: version=$(params.build-version) """
+
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
+        # Trust a customer's private artifact-repo CA, if declared (secret-manager
+        # credential named CUSTOM_CA_CERT, Stage=Build, Secure file).
+        if [ -n "$CUSTOM_CA_CERT_FILE" ]; then
+          export CARGO_HTTP_CAINFO="$CUSTOM_CA_CERT_FILE"
+          echo "Trusting custom CA for private Cargo registry: $CUSTOM_CA_CERT_FILE"
+        fi
+
+        # Use cargo-cache PVC when bound, otherwise fall back to source workspace --
+        # same warm-within-a-run, cold-across-runs tradeoff as maven/go/npm caches.
+        if [ "$(workspaces.cargo-cache.bound)" = "true" ]; then
+          export CARGO_HOME="$(workspaces.cargo-cache.path)/.cargo"
+        else
+          export CARGO_HOME="$HOME/.cargo"
+        fi
+        mkdir -p "$CARGO_HOME"
+        # credentials.toml was written under the ORIGINAL $HOME/.cargo above --
+        # copy it into the effective CARGO_HOME if they differ (cache-workspace case).
+        if [ "$CARGO_HOME" != "$HOME/.cargo" ] && [ -f "$HOME/.cargo/credentials.toml" ]; then
+          cp "$HOME/.cargo/credentials.toml" "$CARGO_HOME/credentials.toml"
+        fi
+
+        # BUILD_FILE from ai-preflight is always repo-root-relative, but
+        # workingDir here is already source/$BUILD_CONTEXT -- strip a leading
+        # build-context/ prefix to avoid double-joining for monorepo apps
+        # (same double-join bug class fixed in test-python-task.yaml's
+        # _strip_ctx(), see the 2026-07-13 build-pattern coverage audit).
+        BUILD_FILE="$(params.build-file)"
+        BUILD_CONTEXT="$(params.build-context)"
+        case "$BUILD_CONTEXT" in
+          .|"") : ;;
+          *) BUILD_FILE="${BUILD_FILE#"$BUILD_CONTEXT"/}" ;;
+        esac
+
+        cargo build --release --manifest-path "$BUILD_FILE"
+
+        # Final, copyable artifact for verify-artifacts / the Dockerfile's
+        # COPY step -- collect every produced binary (cargo places them flat
+        # under target/release/, workspaces included) into ./bin.
+        MANIFEST_DIR="$(dirname "$BUILD_FILE")"
+        mkdir -p ./bin
+        find "$MANIFEST_DIR/target/release" -maxdepth 1 -type f -perm -u+x \
+          -exec cp {} ./bin/ \; 2>/dev/null || true
+        echo """ Rust compile complete -- binaries: """
+        ls -la ./bin/ 2>/dev/null || echo "(none found under target/release -- library-only crate?)"
 
 # Source: platform/tekton/tasks/build/compile-task.yaml
 ---
@@ -3963,6 +4714,196 @@ spec:
 
         echo ""
         echo """ Compile stage complete """
+
+# Source: platform/tekton/tasks/build/compile-typescript-task.yaml
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-compile-typescript
+  namespace: gitops-core
+  labels:
+    gitops-platform.io/stage: compile
+spec:
+  description: "TypeScript compile -- install deps, explicit 'tsc --noEmit' type-check (independent of whatever the project's own build script does), then npm run build (if present)."
+  params:
+    - name: build-tool
+      default: "npm"
+    - name: build-version
+      default: "20"
+    - name: build-file
+      default: "package.json"
+    - name: build-context
+      default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
+  workspaces:
+    - name: source
+    - name: npm-cache
+      optional: true
+      description: "Persistent npm cache (~/.npm). Shared across runs to avoid re-downloading packages."
+    - name: extra-build-creds
+      optional: true
+      description: "Consolidated Secret of {name}-username/{name}-token keys for this app's declared build-artifact-repo credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
+  steps:
+    # Identical to gitops-compile-nodejs's own materialize-build-creds step --
+    # TypeScript apps use the same npm/yarn/pnpm registries as plain Node.js.
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/usr/bin/env python3
+        import json, os, pathlib
+
+        manifest = json.loads('''$(params.extra-creds-manifest)''')
+        creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        if not manifest:
+            print("No extra build-artifact-repo credentials declared -- skipping")
+        else:
+            lines = []
+            for cred in manifest:
+                name, host = cred["name"], cred["matchId"]
+                token = (creds_dir / f"{name}-token").read_text().strip()
+                lines.append(f"//{host}/:_authToken={token}")
+            (home / ".npmrc").write_text("\n".join(lines) + "\n")
+            print(f"Wrote {len(manifest)} npm registry credential(s) to {home}/.npmrc")
+
+        svc_lines: list[str] = []
+        for raw_ws_path in ("$(workspaces.extra-service-creds.path)",
+                             "$(workspaces.extra-generic-build-creds.path)"):
+            if not raw_ws_path:
+                continue
+            svc_dir = pathlib.Path(raw_ws_path)
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+
+    - name: compile
+      image: k8secops/k8secops:node-$(params.build-version)-alpine
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)/$(params.build-context)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "500m", memory: "512Mi"}
+        limits:   {cpu: "2000m", memory: "2Gi"}
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/bin/sh
+        set -e
+        BUILD_TOOL="$(params.build-tool)"
+        echo """ TypeScript compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
+
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
+        if [ -n "$CUSTOM_CA_CERT_FILE" ]; then
+          export NODE_EXTRA_CA_CERTS="$CUSTOM_CA_CERT_FILE"
+          echo "Trusting custom CA for private npm registry: $CUSTOM_CA_CERT_FILE"
+        fi
+
+        mkdir -p "$HOME"
+
+        if [ "$(workspaces.npm-cache.bound)" = "true" ]; then
+          export npm_config_cache="$(workspaces.npm-cache.path)/.npm"
+        else
+          export npm_config_cache="$HOME/.npm"
+        fi
+        mkdir -p "$npm_config_cache"
+
+        # Per-build-tool install + explicit type-check + build, one small
+        # focused script per tool under scripts/typescript/ -- same
+        # SCRIPT_FILE-embedding convention as every other language.
+        case "$BUILD_TOOL" in
+          yarn)
+            # corepack enable makes `yarn` respect a project's pinned packageManager
+            # version (Yarn Berry / 2+) instead of silently falling back to the classic
+            # Yarn 1.x bundled in the base image.
+            corepack enable
+            yarn install --frozen-lockfile --silent
+
+            if [ -f "tsconfig.json" ]; then
+              echo "-- TypeScript type-check (tsconfig.json) --"
+              # npx resolves the project's own locally-installed tsc (node_modules/.bin)
+              # regardless of which package manager did the install -- no yarn-specific
+              # invocation needed.
+              npx tsc --noEmit -p tsconfig.json
+            else
+              echo "-- No tsconfig.json found at $(pwd) -- skipping explicit type-check --"
+            fi
+
+            # Unlike compile-yarn.sh's nodejs counterpart, a build failure here is NOT
+            # swallowed -- TypeScript's whole point is catching errors before they reach
+            # the image build.
+            yarn build
+            ;;
+          pnpm)
+            corepack enable && pnpm install --frozen-lockfile --silent
+
+            if [ -f "tsconfig.json" ]; then
+              echo "-- TypeScript type-check (tsconfig.json) --"
+              npx tsc --noEmit -p tsconfig.json
+            else
+              echo "-- No tsconfig.json found at $(pwd) -- skipping explicit type-check --"
+            fi
+
+            # Unlike compile-pnpm.sh's nodejs counterpart, a build failure here is NOT
+            # swallowed -- TypeScript's whole point is catching errors before they reach
+            # the image build.
+            pnpm run build --if-present
+            ;;
+          *)
+            npm install --silent
+
+            if [ -f "tsconfig.json" ]; then
+              echo "-- TypeScript type-check (tsconfig.json) --"
+              npx tsc --noEmit -p tsconfig.json
+            else
+              echo "-- No tsconfig.json found at $(pwd) -- skipping explicit type-check --"
+            fi
+
+            npm run build --if-present
+            ;;
+        esac
+        echo """ TypeScript compile complete """
 
 # Source: platform/tekton/tasks/build/hadolint-task.yaml
 ---
@@ -7797,12 +8738,14 @@ spec:
             MANIFEST_GLOBS = {
                 "maven":  ["pom.xml"],
                 "gradle": ["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"],
+                "ant":    ["build.xml"],
                 "npm":    ["package.json"], "yarn": ["package.json"], "pnpm": ["package.json"],
                 "go":     ["go.mod"],
                 "dotnet": ["*.csproj", "*.sln"],
                 "pip":    ["requirements.txt", "pyproject.toml", "Pipfile"],
                 "poetry": ["pyproject.toml"], "pdm": ["pyproject.toml"],
                 "pipenv": ["Pipfile"], "uv": ["pyproject.toml"],
+                "cargo":  ["Cargo.toml"],
             }
             IGNORE_DIRS = {".git", "node_modules", ".venv", "venv", "vendor", "target", "build",
                             "dist", ".next", "bin", "obj", "__pycache__", ".m2", ".gradle"}
