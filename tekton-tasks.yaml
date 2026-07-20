@@ -1533,21 +1533,18 @@ spec:
         mkdir -p $(workspaces.results.path)/sca
         DB_DIR=$(workspaces.vulndb-cache.path)/owasp
         DB_FILE=$DB_DIR/odc.mv.db
-        LOCK_FILE=$DB_DIR/odc.update.lock
         STATUS_FILE=$(workspaces.results.path)/sca/owasp-status.json
         RESULTS_DIR=$(workspaces.results.path)/sca
-        
-        if [ -f $LOCK_FILE ]; then
-          echo 'OWASP SKIP: NVD database update in progress - lock file present'
-          echo 'Re-trigger this pipeline once the nvd-updater CronJob completes'
-          echo eyJzdGF0dXMiOiJza2lwcGVkIiwicmVhc29uIjoiZGJfdXBkYXRlX2luX3Byb2dyZXNzIn0= | base64 -d > $STATUS_FILE
-          echo -n 0 > $(results.VULN_COUNT.path)
-          exit 0
-        fi
-        
+
+        # DB is populated (best-effort) by the gitops-vulndb-seed task earlier
+        # in this same pipeline, from the persistent cache server in
+        # gitops-tooling (see values.yaml vulnDbCacheServer). If that server
+        # hasn't refreshed yet or was unreachable, DB_FILE just won't exist --
+        # skip cleanly rather than trying to update it here (this per-run PVC
+        # is deleted with the namespace at run end, so any update here would
+        # be wasted work anyway).
         if [ ! -f $DB_FILE ]; then
-          echo 'OWASP SKIP: NVD database not found'
-          echo 'Run: kubectl create job nvd-seed --from=cronjob/gitops-platform-nvd-updater -n tekton-pipelines'
+          echo 'OWASP SKIP: NVD database not available in this run (cache server not yet warm or unreachable)'
           echo eyJzdGF0dXMiOiJza2lwcGVkIiwicmVhc29uIjoiZGJfbm90X2ZvdW5kIn0= | base64 -d > $STATUS_FILE
           echo -n 0 > $(results.VULN_COUNT.path)
           exit 0
@@ -1672,6 +1669,8 @@ spec:
     - name: TESTS_PASSED
     - name: TESTS_FAILED
     - name: COVERAGE_PCT
+    - name: TESTS_EXECUTED
+      description: "'true' if a test runner actually produced a report, 'false' if the runner itself never ran (broken install, no test binary, etc.) -- distinguishes that from a genuine zero-test project."
   steps:
     - name: export-extra-env
       image: k8secops/k8secops:python-3.12-slim
@@ -1797,6 +1796,7 @@ spec:
 
         report_dir = pathlib.Path("$(workspaces.results.path)/tests")
         passed = failed = 0
+        executed = False
         try:
             tree = ET.parse(report_dir / "results.trx")
             ns = {"t": "http://microsoft.com/schemas/VisualStudio/TeamTest/2010"}
@@ -1804,6 +1804,7 @@ spec:
             if counters is not None:
                 passed = int(counters.get("passed",0))
                 failed = int(counters.get("failed",0))
+                executed = True
         except: pass
 
         coverage = 0.0
@@ -1816,7 +1817,8 @@ spec:
         open("$(results.TESTS_PASSED.path)","w").write(str(passed))
         open("$(results.TESTS_FAILED.path)","w").write(str(failed))
         open("$(results.COVERAGE_PCT.path)","w").write(str(coverage))
-        print(f".NET tests: {passed} passed, {failed} failed, coverage {coverage}%")
+        open("$(results.TESTS_EXECUTED.path)","w").write("true" if executed else "false")
+        print(f".NET tests: {passed} passed, {failed} failed, coverage {coverage}%, executed={executed}")
 
     - name: check-and-notify
       image: k8secops/k8secops:python-3.12-slim
@@ -1841,10 +1843,11 @@ spec:
         coverage  = float(open("$(results.COVERAGE_PCT.path)").read().strip() or "0")
         passed    = int(open("$(results.TESTS_PASSED.path)").read().strip() or "0")
         failed    = int(open("$(results.TESTS_FAILED.path)").read().strip() or "0")
+        executed  = open("$(results.TESTS_EXECUTED.path)").read().strip() == "true"
         threshold = int("$(params.coverage-threshold)")
         payload = json.dumps({"runId": "$(params.pipeline-run-id)", "coveragePct": coverage,
-            "threshold": threshold, "passed": failed == 0 and coverage >= threshold,
-            "testsPassed": passed, "testsFailed": failed}).encode()
+            "threshold": threshold, "passed": executed and failed == 0 and coverage >= threshold,
+            "testsPassed": passed, "testsFailed": failed, "testsExecuted": executed}).encode()
         token = os.environ.get("OPERATOR_API_TOKEN", "")
         headers = {"Content-Type": "application/json"}
         if token: headers["Authorization"] = f"Bearer {token}"
@@ -1859,7 +1862,9 @@ spec:
         # has failing tests or low coverage, not this task. Results are
         # already persisted above via the /coverage callback regardless of
         # outcome; this only affects this step's own exit code.
-        if failed > 0:
+        if not executed:
+            print("WARNING: test runner did not produce a report -- treat as unverified, not as a clean 0-test result. Check the test step's logs above.")
+        elif failed > 0:
             print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
         elif coverage < threshold:
             print(f"NOTE: coverage {coverage}% below threshold {threshold}% -- proceeding; visible at the human gate for review")
@@ -1906,6 +1911,8 @@ spec:
     - name: TESTS_PASSED
     - name: TESTS_FAILED
     - name: COVERAGE_PCT
+    - name: TESTS_EXECUTED
+      description: "'true' if a test runner actually produced a report, 'false' if the runner itself never ran (broken install, no test binary, etc.) -- distinguishes that from a genuine zero-test project."
   steps:
     - name: export-extra-env
       image: k8secops/k8secops:python-3.12-slim
@@ -1978,21 +1985,52 @@ spec:
         mkdir -p "$HOME"
         mkdir -p $(workspaces.results.path)/tests
 
-        go install gotest.tools/gotestsum@latest 2>/dev/null || true
-        export PATH="$HOME/go/bin:$PATH"
+        # gotestsum is pinned to a known release (not @latest) for
+        # reproducible builds. If install fails (network blip, proxy down),
+        # fall back to `go test -json` -- built into the go toolchain
+        # itself, no install needed, and gotestsum's own JUnit conversion is
+        # built on the exact same event stream, so this is a real fallback,
+        # not a degraded one.
+        GOTESTSUM_OK=false
+        if go install gotest.tools/gotestsum@v1.12.0 2>/tmp/gotestsum-install.log; then
+          export PATH="$HOME/go/bin:$PATH"
+          GOTESTSUM_OK=true
+        else
+          echo "WARNING: gotestsum install failed -- falling back to 'go test -json'"
+          cat /tmp/gotestsum-install.log
+        fi
 
-        gotestsum \
-          --junitfile $(workspaces.results.path)/tests/junit.xml \
-          --format standard-quiet \
-          -- -coverprofile=$(workspaces.results.path)/tests/coverage.out \
-          $(params.test-pattern) 2>&1 || true
+        RAN_OK=false
+        if [ "$GOTESTSUM_OK" = "true" ]; then
+          if gotestsum \
+            --junitfile $(workspaces.results.path)/tests/junit.xml \
+            --format standard-quiet \
+            -- -coverprofile=$(workspaces.results.path)/tests/coverage.out \
+            $(params.test-pattern) 2>&1; then
+            RAN_OK=true
+          elif [ -f $(workspaces.results.path)/tests/junit.xml ]; then
+            # gotestsum exits non-zero when tests fail -- that's a normal
+            # test-failure outcome, not an execution failure; the JUnit
+            # report still exists and is valid.
+            RAN_OK=true
+          fi
+        else
+          if go test -v -json -coverprofile=$(workspaces.results.path)/tests/coverage.out \
+            $(params.test-pattern) > $(workspaces.results.path)/tests/go-test.json 2>&1; then
+            RAN_OK=true
+          elif [ -s $(workspaces.results.path)/tests/go-test.json ]; then
+            RAN_OK=true
+          fi
+        fi
 
         # Convert coverage.out to a text summary
         go tool cover -func=$(workspaces.results.path)/tests/coverage.out \
           > $(workspaces.results.path)/tests/coverage.txt 2>/dev/null || true
 
-        # Parse JUnit results (no python3 available as non-root in alpine)
+        # Parse JUnit (gotestsum path) or the go-test-json event stream
+        # (fallback path) -- no python3 available as non-root in alpine.
         JUNIT="$(workspaces.results.path)/tests/junit.xml"
+        JSONL="$(workspaces.results.path)/tests/go-test.json"
         PASSED=0
         FAILED=0
         if [ -f "$JUNIT" ]; then
@@ -2008,6 +2046,11 @@ spec:
           ' "$JUNIT")
           PASSED=$1
           FAILED=$2
+        elif [ -f "$JSONL" ]; then
+          # go test -json: one JSON object per line, {"Action":"pass"/"fail","Test":"..."}
+          # -- only count events with a "Test" field (skip package-level summary lines).
+          PASSED=$(grep -c '"Action":"pass".*"Test":"' "$JSONL" 2>/dev/null || echo 0)
+          FAILED=$(grep -c '"Action":"fail".*"Test":"' "$JSONL" 2>/dev/null || echo 0)
         fi
 
         # Parse coverage percentage from the "total:" line
@@ -2021,7 +2064,8 @@ spec:
         echo -n "$PASSED" > $(results.TESTS_PASSED.path)
         echo -n "$FAILED" > $(results.TESTS_FAILED.path)
         echo -n "$COVERAGE" > $(results.COVERAGE_PCT.path)
-        echo "Go tests: $PASSED passed, $FAILED failed, coverage ${COVERAGE}%"
+        echo -n "$RAN_OK" > $(results.TESTS_EXECUTED.path)
+        echo "Go tests: $PASSED passed, $FAILED failed, coverage ${COVERAGE}%, executed=$RAN_OK"
 
     - name: check-and-notify
       image: k8secops/k8secops:python-3.12-slim
@@ -2046,10 +2090,11 @@ spec:
         coverage  = float(open("$(results.COVERAGE_PCT.path)").read().strip() or "0")
         passed    = int(open("$(results.TESTS_PASSED.path)").read().strip() or "0")
         failed    = int(open("$(results.TESTS_FAILED.path)").read().strip() or "0")
+        executed  = open("$(results.TESTS_EXECUTED.path)").read().strip() == "true"
         threshold = int("$(params.coverage-threshold)")
         payload = json.dumps({"runId": "$(params.pipeline-run-id)", "coveragePct": coverage,
-            "threshold": threshold, "passed": failed == 0 and coverage >= threshold,
-            "testsPassed": passed, "testsFailed": failed}).encode()
+            "threshold": threshold, "passed": executed and failed == 0 and coverage >= threshold,
+            "testsPassed": passed, "testsFailed": failed, "testsExecuted": executed}).encode()
         token = os.environ.get("OPERATOR_API_TOKEN", "")
         headers = {"Content-Type": "application/json"}
         if token: headers["Authorization"] = f"Bearer {token}"
@@ -2064,7 +2109,9 @@ spec:
         # has failing tests or low coverage, not this task. Results are
         # already persisted above via the /coverage callback regardless of
         # outcome; this only affects this step's own exit code.
-        if failed > 0:
+        if not executed:
+            print("WARNING: test runner did not produce a report -- treat as unverified, not as a clean 0-test result. Check the test step's logs above.")
+        elif failed > 0:
             print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
         elif coverage < threshold:
             print(f"NOTE: coverage {coverage}% below threshold {threshold}% -- proceeding; visible at the human gate for review")
@@ -2115,6 +2162,8 @@ spec:
     - name: TESTS_PASSED
     - name: TESTS_FAILED
     - name: COVERAGE_PCT
+    - name: TESTS_EXECUTED
+      description: "'true' if a test runner actually produced a report, 'false' if the runner itself never ran (broken install, no test binary, etc.) -- distinguishes that from a genuine zero-test project."
   steps:
     # Generic, identical step for every language -- exports each declared
     # test-time secret (its filename IS the literal env var name the
@@ -2265,11 +2314,13 @@ spec:
 
         report_dir = pathlib.Path("$(workspaces.results.path)/tests")
         passed = failed = 0
+        executed = False
         for xml_file in report_dir.glob("TEST-*.xml"):
             try:
                 ts = ET.parse(xml_file).getroot()
                 passed += int(ts.get("tests",0)) - int(ts.get("failures",0)) - int(ts.get("errors",0))
                 failed += int(ts.get("failures",0)) + int(ts.get("errors",0))
+                executed = True
             except: pass
 
         coverage = 0.0
@@ -2286,7 +2337,8 @@ spec:
         open("$(results.TESTS_PASSED.path)","w").write(str(passed))
         open("$(results.TESTS_FAILED.path)","w").write(str(failed))
         open("$(results.COVERAGE_PCT.path)","w").write(str(coverage))
-        print(f"Java tests: {passed} passed, {failed} failed, coverage {coverage}%")
+        open("$(results.TESTS_EXECUTED.path)","w").write("true" if executed else "false")
+        print(f"Java tests: {passed} passed, {failed} failed, coverage {coverage}%, executed={executed}")
 
     - name: check-and-notify
       image: k8secops/k8secops:python-3.12-slim
@@ -2311,10 +2363,11 @@ spec:
         coverage  = float(open("$(results.COVERAGE_PCT.path)").read().strip() or "0")
         passed    = int(open("$(results.TESTS_PASSED.path)").read().strip() or "0")
         failed    = int(open("$(results.TESTS_FAILED.path)").read().strip() or "0")
+        executed  = open("$(results.TESTS_EXECUTED.path)").read().strip() == "true"
         threshold = int("$(params.coverage-threshold)")
         payload = json.dumps({"runId": "$(params.pipeline-run-id)", "coveragePct": coverage,
-            "threshold": threshold, "passed": failed == 0 and coverage >= threshold,
-            "testsPassed": passed, "testsFailed": failed}).encode()
+            "threshold": threshold, "passed": executed and failed == 0 and coverage >= threshold,
+            "testsPassed": passed, "testsFailed": failed, "testsExecuted": executed}).encode()
         token = os.environ.get("OPERATOR_API_TOKEN", "")
         headers = {"Content-Type": "application/json"}
         if token: headers["Authorization"] = f"Bearer {token}"
@@ -2329,7 +2382,9 @@ spec:
         # has failing tests or low coverage, not this task. Results are
         # already persisted above via the /coverage callback regardless of
         # outcome; this only affects this step's own exit code.
-        if failed > 0:
+        if not executed:
+            print("WARNING: test runner did not produce a report -- treat as unverified, not as a clean 0-test result. Check the test step's logs above.")
+        elif failed > 0:
             print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
         elif coverage < threshold:
             print(f"NOTE: coverage {coverage}% below threshold {threshold}% -- proceeding; visible at the human gate for review")
@@ -2380,6 +2435,8 @@ spec:
     - name: TESTS_PASSED
     - name: TESTS_FAILED
     - name: COVERAGE_PCT
+    - name: TESTS_EXECUTED
+      description: "'true' if a test runner actually produced a report, 'false' if the runner itself never ran (broken install, no test binary, etc.) -- distinguishes that from a genuine zero-test project."
   steps:
     - name: export-extra-env
       image: k8secops/k8secops:python-3.12-slim
@@ -2491,7 +2548,7 @@ spec:
         node - << 'JSEOF'
         const fs = require('fs');
         const path = '$(workspaces.results.path)/tests';
-        let passed=0, failed=0, coverage=0;
+        let passed=0, failed=0, coverage=0, executed=false;
         try {
           const xml = fs.readFileSync(`${path}/junit.xml`,'utf8');
           const tp = (xml.match(/tests="(\d+)"/)||[])[1]||0;
@@ -2499,6 +2556,7 @@ spec:
           const te = (xml.match(/errors="(\d+)"/)||[])[1]||0;
           failed = parseInt(tf)+parseInt(te);
           passed = parseInt(tp)-failed;
+          executed = true;
         } catch(e){}
         try {
           const cov = fs.readFileSync(`${path}/cobertura-coverage.xml`,'utf8');
@@ -2508,7 +2566,8 @@ spec:
         fs.writeFileSync('$(results.TESTS_PASSED.path)', String(passed));
         fs.writeFileSync('$(results.TESTS_FAILED.path)', String(failed));
         fs.writeFileSync('$(results.COVERAGE_PCT.path)', String(coverage));
-        console.log(`Node.js tests: ${passed} passed, ${failed} failed, coverage ${coverage}%`);
+        fs.writeFileSync('$(results.TESTS_EXECUTED.path)', executed ? 'true' : 'false');
+        console.log(`Node.js tests: ${passed} passed, ${failed} failed, coverage ${coverage}%, executed=${executed}`);
         JSEOF
 
     - name: check-and-notify
@@ -2534,10 +2593,11 @@ spec:
         coverage  = float(open("$(results.COVERAGE_PCT.path)").read().strip() or "0")
         passed    = int(open("$(results.TESTS_PASSED.path)").read().strip() or "0")
         failed    = int(open("$(results.TESTS_FAILED.path)").read().strip() or "0")
+        executed  = open("$(results.TESTS_EXECUTED.path)").read().strip() == "true"
         threshold = int("$(params.coverage-threshold)")
         payload = json.dumps({"runId": "$(params.pipeline-run-id)", "coveragePct": coverage,
-            "threshold": threshold, "passed": failed == 0 and coverage >= threshold,
-            "testsPassed": passed, "testsFailed": failed}).encode()
+            "threshold": threshold, "passed": executed and failed == 0 and coverage >= threshold,
+            "testsPassed": passed, "testsFailed": failed, "testsExecuted": executed}).encode()
         token = os.environ.get("OPERATOR_API_TOKEN", "")
         headers = {"Content-Type": "application/json"}
         if token: headers["Authorization"] = f"Bearer {token}"
@@ -2552,7 +2612,9 @@ spec:
         # has failing tests or low coverage, not this task. Results are
         # already persisted above via the /coverage callback regardless of
         # outcome; this only affects this step's own exit code.
-        if failed > 0:
+        if not executed:
+            print("WARNING: test runner did not produce a report -- treat as unverified, not as a clean 0-test result. Check the test step's logs above.")
+        elif failed > 0:
             print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
         elif coverage < threshold:
             print(f"NOTE: coverage {coverage}% below threshold {threshold}% -- proceeding; visible at the human gate for review")
@@ -2603,6 +2665,8 @@ spec:
     - name: TESTS_PASSED
     - name: TESTS_FAILED
     - name: COVERAGE_PCT
+    - name: TESTS_EXECUTED
+      description: "'true' if a test runner actually produced a report, 'false' if the runner itself never ran (broken install, no test binary, etc.) -- distinguishes that from a genuine zero-test project."
   steps:
     - name: export-extra-env
       image: k8secops/k8secops:python-3.12-slim
@@ -2771,6 +2835,7 @@ spec:
 
         # Parse JUnit
         passed = failed = 0
+        executed = False
         try:
             tree = ET.parse("$(workspaces.results.path)/tests/junit.xml")
             root = tree.getroot()
@@ -2778,6 +2843,7 @@ spec:
             if suite is not None:
                 passed = int(suite.get("tests",0)) - int(suite.get("failures",0)) - int(suite.get("errors",0))
                 failed = int(suite.get("failures",0)) + int(suite.get("errors",0))
+                executed = True
         except: pass
 
         # Parse coverage
@@ -2790,7 +2856,8 @@ spec:
         open("$(results.TESTS_PASSED.path)","w").write(str(passed))
         open("$(results.TESTS_FAILED.path)","w").write(str(failed))
         open("$(results.COVERAGE_PCT.path)","w").write(str(coverage))
-        print(f"Python tests: {passed} passed, {failed} failed, coverage {coverage}%")
+        open("$(results.TESTS_EXECUTED.path)","w").write("true" if executed else "false")
+        print(f"Python tests: {passed} passed, {failed} failed, coverage {coverage}%, executed={executed}")
         PYEOF
 
     - name: check-and-notify
@@ -2816,10 +2883,11 @@ spec:
         coverage  = float(open("$(results.COVERAGE_PCT.path)").read().strip() or "0")
         passed    = int(open("$(results.TESTS_PASSED.path)").read().strip() or "0")
         failed    = int(open("$(results.TESTS_FAILED.path)").read().strip() or "0")
+        executed  = open("$(results.TESTS_EXECUTED.path)").read().strip() == "true"
         threshold = int("$(params.coverage-threshold)")
         payload = json.dumps({"runId": "$(params.pipeline-run-id)", "coveragePct": coverage,
-            "threshold": threshold, "passed": failed == 0 and coverage >= threshold,
-            "testsPassed": passed, "testsFailed": failed}).encode()
+            "threshold": threshold, "passed": executed and failed == 0 and coverage >= threshold,
+            "testsPassed": passed, "testsFailed": failed, "testsExecuted": executed}).encode()
         token = os.environ.get("OPERATOR_API_TOKEN", "")
         headers = {"Content-Type": "application/json"}
         if token: headers["Authorization"] = f"Bearer {token}"
@@ -2834,7 +2902,9 @@ spec:
         # has failing tests or low coverage, not this task. Results are
         # already persisted above via the /coverage callback regardless of
         # outcome; this only affects this step's own exit code.
-        if failed > 0:
+        if not executed:
+            print("WARNING: test runner did not produce a report -- treat as unverified, not as a clean 0-test result. Check the test step's logs above.")
+        elif failed > 0:
             print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
         elif coverage < threshold:
             print(f"NOTE: coverage {coverage}% below threshold {threshold}% -- proceeding; visible at the human gate for review")
@@ -2884,6 +2954,8 @@ spec:
     - name: TESTS_PASSED
     - name: TESTS_FAILED
     - name: COVERAGE_PCT
+    - name: TESTS_EXECUTED
+      description: "'true' if a test runner actually produced a report, 'false' if the runner itself never ran (broken install, no test binary, etc.) -- distinguishes that from a genuine zero-test project."
   steps:
     - name: export-extra-env
       image: k8secops/k8secops:python-3.12-slim
@@ -2973,13 +3045,24 @@ spec:
         FAILED=$(grep -oE '[0-9]+ failed' $(workspaces.results.path)/tests/output.txt \
                    | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')
 
+        # At least one "test result: ..." line means cargo actually ran a
+        # test binary to completion -- distinguishes a genuine zero-test
+        # crate from cargo failing before it ever got that far (a compile
+        # error, for instance, produces 0/0 here too but with no such line).
+        if grep -q 'test result:' $(workspaces.results.path)/tests/output.txt 2>/dev/null; then
+          EXECUTED=true
+        else
+          EXECUTED=false
+        fi
+
         echo -n "$PASSED" > $(results.TESTS_PASSED.path)
         echo -n "$FAILED" > $(results.TESTS_FAILED.path)
         # Coverage isn't collected for Rust (see comment above) -- 0.0 is
         # reported with threshold overridden to 0 in check-and-notify below
         # so this reads as "not measured", not "0% covered".
         echo -n "0.0" > $(results.COVERAGE_PCT.path)
-        echo "Rust tests: $PASSED passed, $FAILED failed (coverage not collected)"
+        echo -n "$EXECUTED" > $(results.TESTS_EXECUTED.path)
+        echo "Rust tests: $PASSED passed, $FAILED failed (coverage not collected), executed=$EXECUTED"
 
     - name: check-and-notify
       image: k8secops/k8secops:python-3.12-slim
@@ -3002,12 +3085,13 @@ spec:
         import json, urllib.request, os
         passed    = int(open("$(results.TESTS_PASSED.path)").read().strip() or "0")
         failed    = int(open("$(results.TESTS_FAILED.path)").read().strip() or "0")
+        executed  = open("$(results.TESTS_EXECUTED.path)").read().strip() == "true"
         # threshold forced to 0 (not $(params.coverage-threshold)) -- coverage
         # is never measured for Rust, so a nonzero threshold would show every
         # run as "below threshold" regardless of actual test health.
         payload = json.dumps({"runId": "$(params.pipeline-run-id)", "coveragePct": 0.0,
-            "threshold": 0, "passed": failed == 0,
-            "testsPassed": passed, "testsFailed": failed}).encode()
+            "threshold": 0, "passed": executed and failed == 0,
+            "testsPassed": passed, "testsFailed": failed, "testsExecuted": executed}).encode()
         token = os.environ.get("OPERATOR_API_TOKEN", "")
         headers = {"Content-Type": "application/json"}
         if token: headers["Authorization"] = f"Bearer {token}"
@@ -3019,7 +3103,9 @@ spec:
             print(f"Coverage notify failed (non-fatal): {e}")
         # Never fail the Tekton task/pipeline on test results -- the human
         # gate is where a developer/reviewer decides what to do with failures.
-        if failed > 0:
+        if not executed:
+            print("WARNING: cargo test did not produce a result -- treat as unverified, not as a clean 0-test result. Check the test step's logs above.")
+        elif failed > 0:
             print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
         else:
             print(f"PASS: {passed} tests")
@@ -3163,6 +3249,25 @@ spec:
           echo "Using registry mirror: $(params.registry-mirror)"
         fi
 
+        # kaniko-cache workspace is an emptyDir (each pipeline run gets a
+        # fresh, short-lived namespace -- see build_namespace_provisioner.py
+        # -- so a local cache dir never survives past this one run). Layer
+        # caching that actually persists across runs/branches of the same
+        # app instead goes to a remote cache repo, stored via the same
+        # registry credentials this task already uses to push the final
+        # image (registry-credentials workspace / DOCKER_CONFIG below).
+        CACHE_REPO="$(params.image-registry)/$(params.image-name)-cache"
+
+        # Compile/precompile tasks materialize real credentials (private
+        # registry tokens, external-service secrets, .netrc/.npmrc/NuGet
+        # configs) into these per-language HOME directories under the same
+        # workspace root Kaniko builds from. --ignore-path excludes them from
+        # the image's filesystem snapshot regardless of what the Dockerfile's
+        # COPY/ADD instructions do -- including the platform's own default
+        # generated Dockerfiles (pre-build-task.yaml) AND any custom
+        # Dockerfile an app supplies, both of which commonly do `COPY . .`.
+        # .gopath/.nuget hold downloaded dependency caches, not credentials
+        # directly, but never belong in a shipped image either.
         # shellcheck disable=SC2086
         /kaniko/executor \
           --dockerfile="$(workspaces.source.path)/$DF" \
@@ -3171,10 +3276,17 @@ spec:
           --no-push \
           --tar-path="$(workspaces.image-tar.path)/image.tar" \
           --snapshot-mode=full \
+          --cache=true \
           --cache-dir="$(workspaces.kaniko-cache.path)" \
+          --cache-repo="$CACHE_REPO" \
           --cache-ttl=168h \
           --log-format=text \
           --verbosity=info \
+          --ignore-path="$(workspaces.source.path)/.compile-home" \
+          --ignore-path="$(workspaces.source.path)/.dotnet-home" \
+          --ignore-path="$(workspaces.source.path)/.precompile-home" \
+          --ignore-path="$(workspaces.source.path)/.gopath" \
+          --ignore-path="$(workspaces.source.path)/.nuget" \
           $MIRROR_FLAG
 
         echo "Image saved: $(workspaces.image-tar.path)/image.tar"
@@ -6076,10 +6188,12 @@ spec:
     - name: image-ref
       default: ""
       description: "Full image reference being scanned (for display only)"
+    - name: trivy-server-url
+      default: ""
+      description: "Internal trivy-server URL (client/server mode). Empty falls back to a fully standalone scan."
   workspaces:
     - name: image-tar
     - name: results
-    - name: vulndb-cache
   results:
     - name: CRITICAL_COUNT
     - name: HIGH_COUNT
@@ -6100,8 +6214,10 @@ spec:
         requests: {cpu: "200m", memory: "512Mi"}
         limits:   {cpu: "1000m", memory: "2Gi"}
       env:
+        # Local scratch only -- the vulnerability DB itself lives on
+        # trivy-server now (see vulndb-cache-server.yaml), not here.
         - name: TRIVY_CACHE_DIR
-          value: "$(workspaces.vulndb-cache.path)/trivy"
+          value: "/tmp/trivy-cache"
       script: |
         #!/bin/sh
         mkdir -p $(workspaces.results.path)/image-scan "$TRIVY_CACHE_DIR"
@@ -6109,26 +6225,60 @@ spec:
         IMAGE_REF="$(params.image-ref)"
         TAR_SIZE=$(du -sh "$TAR" 2>/dev/null | cut -f1 || echo "?")
 
+        SERVER_FLAG=""
+        if [ -n "$(params.trivy-server-url)" ]; then
+          SERVER_FLAG="--server $(params.trivy-server-url)"
+        fi
+
         echo "-- Trivy image scan --"
         echo "  Image : ${IMAGE_REF:-<unknown>}"
         echo "  Tar   : $TAR ($TAR_SIZE)"
         echo "  Rules : $(params.severity)"
+        echo "  Server: ${SERVER_FLAG:-<standalone -- no trivy-server configured>}"
         echo ""
 
+        # trivy's --server client mode does NOT fall back to standalone if
+        # the server is unreachable -- it just errors, and with `|| true`
+        # that would otherwise silently produce an EMPTY report (read as
+        # "0 vulnerabilities found" downstream) instead of an honest scan.
+        # For a security scanner, a silent false-negative is worse than the
+        # slower standalone path, so retry standalone whenever the
+        # server-mode attempt didn't produce real output.
+        # shellcheck disable=SC2086
         trivy image \
           --input "$TAR" \
           --format sarif \
           --output $(workspaces.results.path)/image-scan/trivy.sarif \
           --scanners vuln,secret,misconfig,license \
           --severity "$(params.severity)" \
-          --exit-code 0 2>/dev/null || true
+          --exit-code 0 $SERVER_FLAG 2>/dev/null || true
+        if [ -n "$SERVER_FLAG" ] && [ ! -s "$(workspaces.results.path)/image-scan/trivy.sarif" ]; then
+          echo "trivy-server unreachable/failed -- retrying sarif scan standalone"
+          trivy image \
+            --input "$TAR" \
+            --format sarif \
+            --output $(workspaces.results.path)/image-scan/trivy.sarif \
+            --scanners vuln,secret,misconfig,license \
+            --severity "$(params.severity)" \
+            --exit-code 0 2>/dev/null || true
+        fi
 
+        # shellcheck disable=SC2086
         trivy image \
           --input "$TAR" \
           --format json \
           --output $(workspaces.results.path)/image-scan/trivy.json \
           --scanners vuln,secret,misconfig,license \
-          --exit-code 0 2>/dev/null || true
+          --exit-code 0 $SERVER_FLAG 2>/dev/null || true
+        if [ -n "$SERVER_FLAG" ] && [ ! -s "$(workspaces.results.path)/image-scan/trivy.json" ]; then
+          echo "trivy-server unreachable/failed -- retrying json scan standalone"
+          trivy image \
+            --input "$TAR" \
+            --format json \
+            --output $(workspaces.results.path)/image-scan/trivy.json \
+            --scanners vuln,secret,misconfig,license \
+            --exit-code 0 2>/dev/null || true
+        fi
 
         # Count with grep -- Trivy Alpine image has no python3
         JSON="$(workspaces.results.path)/image-scan/trivy.json"
@@ -6143,6 +6293,79 @@ spec:
         SIZE=$(du -sh "$(workspaces.results.path)/image-scan/trivy.json" 2>/dev/null | cut -f1 || echo "0B")
         echo "Report: image-scan/trivy.json  ($SIZE, C=$CRITICAL H=$HIGH M=$MEDIUM)"
 
+
+# Source: platform/tekton/tasks/build/vulndb-seed-task.yaml
+---
+# "" vulndb-seed -- warm the per-run vulndb-cache workspace """""""""""""""
+# Every pipeline run gets a fresh, empty vulndb-cache PVC (ephemeral
+# per-run namespace -- PVCs can't cross namespaces, so it can't be the
+# long-lived shared thing). This task best-effort-fetches the latest OWASP
+# Dependency-Check DB and Grype DB from a persistent, periodically-
+# refreshed cache server in gitops-tooling (see values.yaml
+# vulnDbCacheServer / helm/gitops-platform/templates/tekton/
+# vulndb-cache-server.yaml) so owasp-scan/grype-scan usually don't have to
+# cold-download on every single run.
+#
+# Deliberately never fails the pipeline: if the server is unreachable or a
+# tarball isn't there yet (e.g. before the first CronJob refresh has run),
+# this just leaves the workspace as empty as it already was, and the
+# downstream owasp/grype tasks fall back to their existing cold-start
+# behavior (owasp-scan already treats a missing DB as a soft skip; grype
+# just does its normal full download).
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-vulndb-seed
+  namespace: gitops-core
+  labels:
+    gitops-platform.io/stage: vulndb-seed
+spec:
+  description: "Best-effort warm-cache fetch for OWASP/Grype vulnerability DBs. Never fails."
+  params:
+    - name: vulndb-seed-url
+      default: ""
+      description: "Base URL of the persistent vulndb cache server (empty = skip)."
+  workspaces:
+    - name: vulndb-cache
+  steps:
+    - name: seed
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "100m", memory: "128Mi"}
+        limits:   {cpu: "500m", memory: "512Mi"}
+      script: |
+        #!/usr/bin/env python3
+        import urllib.request, tarfile, os
+
+        base = "$(params.vulndb-seed-url)".rstrip("/")
+        dest = "$(workspaces.vulndb-cache.path)"
+
+        if not base:
+            print("vulndb-seed: no cache server configured, skipping")
+            raise SystemExit(0)
+
+        for name in ("owasp", "grype"):
+            url = f"{base}/{name}.tar.gz"
+            tmp = f"/tmp/{name}.tar.gz"
+            try:
+                with urllib.request.urlopen(url, timeout=30) as resp:
+                    with open(tmp, "wb") as f:
+                        f.write(resp.read())
+                with tarfile.open(tmp) as tf:
+                    tf.extractall(dest)
+                size_mb = os.path.getsize(tmp) // 1024 // 1024
+                print(f"vulndb-seed: restored {name} cache from {url} ({size_mb} MB)")
+            except Exception as e:
+                print(f"vulndb-seed: {name} cache not available ({e}) -- "
+                      f"{name}-scan will cold-start as usual")
 
 # Source: platform/tekton/tasks/ai/ai-aggregate.yaml
 ---
@@ -7697,9 +7920,7 @@ spec:
                 if status_val == 'skipped':
                     reason = st.get('reason', 'unknown')
                     if reason == 'db_not_found':
-                        owasp_skip_reason = 'OWASP Dependency-Check skipped: NVD database not yet seeded. Run the nvd-updater job to initialize.'
-                    elif reason == 'db_update_in_progress':
-                        owasp_skip_reason = 'OWASP Dependency-Check skipped: NVD database update was in progress. Re-trigger after the update completes.'
+                        owasp_skip_reason = 'OWASP Dependency-Check skipped: NVD database not available in this run (cache server not yet warm or unreachable).'
                     else:
                         owasp_skip_reason = 'OWASP Dependency-Check skipped: ' + reason
                     ran = True

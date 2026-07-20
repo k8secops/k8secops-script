@@ -149,6 +149,12 @@ else
   DOCKERHUB_TOKEN=""
 fi
 
+echo ""
+info "An NVD API key dramatically speeds up the OWASP Dependency-Check vulnerability"
+info "database download (from 30-60 min to ~5 min). Get a free key at:"
+info "  nvd.nist.gov/developers/request-an-api-key"
+read -rp "  NVD API key (optional, press Enter to skip): " NVD_API_KEY
+
 # ── Auto-generated credentials ─────────────────────────────────────────────────
 UI_ADMIN_USERNAME="admin"
 OPERATOR_API_TOKEN="${EXISTING_TOKEN:-$(gen_token)}"
@@ -251,6 +257,8 @@ ui:
     password: '$(yesc "${UI_ADMIN_PASSWORD}")'
 sonarqube:
   adminPassword: '$(yesc "${SONARQUBE_PASSWORD}")'
+vulnDbCacheServer:
+  nvdApiKey: '$(yesc "${NVD_API_KEY:-}")'
 database:
   internal:
     password: '$(yesc "${DB_PASSWORD}")'
@@ -317,6 +325,45 @@ section "Step 5 — Applying 30+ security scanner tasks"
 kubectl apply -n "$NS_CORE" -f "${TEKTON_TASKS_URL}"
 info "Scanner tasks applied"
 
+# ── Step 5.5: Seed the vulnerability-DB cache ─────────────────────────────────
+# vulnDbCacheServer (gitops-tooling) refreshes on its own schedule (daily for
+# OWASP, every 6h for Grype) -- this just kicks that off immediately instead
+# of leaving a fresh install's cache cold until the first scheduled run.
+section "Step 5.5 — Seeding the vulnerability-DB cache"
+OWASP_REFRESH_CRONJOB="gitops-platform-owasp-db-refresh"
+GRYPE_REFRESH_CRONJOB="gitops-platform-grype-db-refresh"
+
+if kubectl get cronjob "${OWASP_REFRESH_CRONJOB}" -n "$NS_TOOLING" &>/dev/null; then
+  kubectl delete job gitops-platform-owasp-seed -n "$NS_TOOLING" --ignore-not-found &>/dev/null || true
+  kubectl create job gitops-platform-owasp-seed \
+    --from=cronjob/"${OWASP_REFRESH_CRONJOB}" -n "$NS_TOOLING" &>/dev/null
+  if [[ -n "${NVD_API_KEY:-}" ]]; then
+    info "NVD API key provided — waiting up to 10 min for OWASP database seed..."
+    NVD_TIMEOUT=600 NVD_ELAPSED=0
+    while (( NVD_ELAPSED < NVD_TIMEOUT )); do
+      STATUS=$(kubectl get job gitops-platform-owasp-seed -n "$NS_TOOLING" \
+        -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || echo "")
+      FAILED=$(kubectl get job gitops-platform-owasp-seed -n "$NS_TOOLING" \
+        -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || echo "")
+      [[ "$STATUS" == "True" ]] && { info "OWASP NVD database seeded successfully."; break; }
+      [[ "$FAILED" == "True" ]] && { warn "OWASP seed job failed (non-fatal, best-effort cache)."; break; }
+      sleep 15; NVD_ELAPSED=$((NVD_ELAPSED + 15))
+      info "  OWASP seeding... ${NVD_ELAPSED}s elapsed"
+    done
+    (( NVD_ELAPSED >= NVD_TIMEOUT )) && warn "OWASP seed still running after 10 min — continuing install."
+  else
+    info "No NVD API key — seed running in background (30-60 min without key)."
+    info "owasp-dc scans cold-start (best-effort cache, non-fatal) until seeding completes."
+  fi
+fi
+
+if kubectl get cronjob "${GRYPE_REFRESH_CRONJOB}" -n "$NS_TOOLING" &>/dev/null; then
+  kubectl delete job gitops-platform-grype-seed -n "$NS_TOOLING" --ignore-not-found &>/dev/null || true
+  kubectl create job gitops-platform-grype-seed \
+    --from=cronjob/"${GRYPE_REFRESH_CRONJOB}" -n "$NS_TOOLING" &>/dev/null
+  info "Grype DB seed job started in background (fast — a few minutes)."
+fi
+
 # ── Step 6: Wait ──────────────────────────────────────────────────────────────
 section "Step 6 -- Waiting for all pods to be Running and Ready"
 
@@ -369,11 +416,11 @@ echo "    Username         : admin"
 echo "    Password         : ${SONARQUBE_PASSWORD}"
 echo ""
 echo "  ── OWASP NVD database ──────────────────────────────────"
-echo "    Note             : each pipeline run's OWASP Dependency-Check scan"
-echo "                        downloads the NVD database fresh (no shared"
-echo "                        pre-seeded cache) -- expect ~5-60 min on a run's"
-echo "                        first owasp-dc scan, faster on subsequent runs"
-echo "                        within the same node's local image/layer cache."
+echo "    Note             : the vulnerability-DB cache (OWASP + Grype) refreshes"
+echo "                        itself on a schedule (daily / every 6h) in the"
+echo "                        gitops-tooling namespace; each pipeline run fetches"
+echo "                        from it automatically. If seeding hasn't finished"
+echo "                        yet, owasp-dc/grype scans just cold-start instead."
 echo ""
 echo "  ── Save securely ───────────────────────────────────────"
 echo "    Operator API token: ${OPERATOR_API_TOKEN}"
