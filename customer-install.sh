@@ -24,7 +24,12 @@ set -euo pipefail
 # ── Published locations ──────────────────────────────────────────────────────
 CHART_OCI="oci://registry-1.docker.io/k8secops/gitops-platform"
 CHART_VERSION="1.0.0"
-TEKTON_TASKS_URL="https://raw.githubusercontent.com/k8secops/k8secops-script/main/tekton-tasks.yaml"
+# Pinned to the tag matching this script's own CHART_VERSION, not a mutable
+# branch -- a compromise of (or malicious merge to) k8secops-script's main
+# branch would otherwise silently affect every future install the moment it
+# lands, applied straight to the cluster with this installer's own
+# privileges. Bump this alongside CHART_VERSION on release.
+TEKTON_TASKS_URL="https://raw.githubusercontent.com/k8secops/k8secops-script/v${CHART_VERSION}/tekton-tasks.yaml"
 
 # ── Versions ─────────────────────────────────────────────────────────────────
 TEKTON_VERSION="v1.13.0"
@@ -303,11 +308,25 @@ kubectl rollout status statefulset/gitops-platform-postgresql \
 # (which uses trust auth inside the pod) so the operator can connect.
 DB_URL=$(kubectl get secret gitops-db-credentials -n "${NS_CORE}" \
   -o jsonpath='{.data.database-url}' 2>/dev/null | base64 -d)
-DB_PASS=$(python3 -c "u='${DB_URL}'; print(u.split('://')[1].split('@')[0].split(':')[1])" 2>/dev/null)
+# Bash-native parse (no subprocess) -- DB_URL never becomes a separate
+# process's command-line argument this way, so the password can't briefly
+# appear in `ps`/`/proc/*/cmdline` output to any other process on the host.
+DB_PASS=""
+if [[ "${DB_URL}" =~ ^[a-zA-Z]+://[^:@/]+:([^@]+)@ ]]; then
+  DB_PASS="${BASH_REMATCH[1]}"
+fi
 if [[ -n "${DB_PASS}" ]]; then
-  kubectl exec -n "${NS_DB}" statefulset/gitops-platform-postgresql -- \
-    psql -U gitops -d gitops_platform -c "ALTER USER gitops WITH PASSWORD '${DB_PASS}';" \
-    >/dev/null 2>&1 && info "PostgreSQL password reconciled" || warn "Password reconcile skipped (harmless on fresh DB)"
+  # SQL passed via stdin (heredoc), not a `-c` argument -- same reasoning:
+  # psql's own argv must never contain the password.
+  if kubectl exec -i -n "${NS_DB}" statefulset/gitops-platform-postgresql -- \
+      psql -U gitops -d gitops_platform >/dev/null 2>&1 <<SQL
+ALTER USER gitops WITH PASSWORD '${DB_PASS}';
+SQL
+  then
+    info "PostgreSQL password reconciled"
+  else
+    warn "Password reconcile skipped (harmless on fresh DB)"
+  fi
 fi
 info "PostgreSQL ready"
 
