@@ -723,9 +723,19 @@ spec:
         mkdir -p "$HOME"
         mkdir -p $(workspaces.results.path)/sast
 
-        # Inject security analyzers
-        if [ ! -f Directory.Build.props ]; then
-        cat > Directory.Build.props << 'EOF'
+        # Written to the results workspace, NOT the shared source workspace
+        # -- source is the same PVC gitops-compile-dotnet later builds from,
+        # and MSBuild auto-discovers a Directory.Build.props anywhere in the
+        # project directory tree. A copy left behind in source would get
+        # silently picked up by the real compile step too (extra analyzer
+        # package restore, EnableNETAnalyzers/AnalysisLevel forced on), which
+        # can turn an app with TreatWarningsAsErrors already set into a
+        # SAST-induced compile failure that has nothing to do with its own
+        # code. DirectoryBuildPropsPath points dotnet build at this file
+        # explicitly instead of relying on auto-discovery, so nothing needs
+        # to be written into source at all.
+        ANALYZER_PROPS="$(workspaces.results.path)/Directory.Build.props"
+        cat > "$ANALYZER_PROPS" << 'EOF'
         <Project>
           <ItemGroup>
             <PackageReference Include="SecurityCodeScan.VS2019" Version="5.6.7">
@@ -739,9 +749,9 @@ spec:
           </PropertyGroup>
         </Project>
         EOF
-        fi
 
-        dotnet build --no-incremental -warnaserror > $(workspaces.results.path)/sast/roslyn.txt 2>&1 || true
+        dotnet build --no-incremental -warnaserror "-p:DirectoryBuildPropsPath=$ANALYZER_PROPS" \
+          > $(workspaces.results.path)/sast/roslyn.txt 2>&1 || true
 
         COUNT=$(grep -E "SCS[0-9]+|CA[0-9]{4}" $(workspaces.results.path)/sast/roslyn.txt | grep -iE "error|warning" | wc -l)
         echo -n "$COUNT" > $(results.FINDING_COUNT.path)
@@ -806,11 +816,14 @@ spec:
 
         # cargo-audit: known-vulnerable-crate advisories from the RustSec
         # database, cargo's dependency-CVE equivalent of npm audit/pip-audit.
-        # Not part of the default toolchain -- installed on the fly (same
-        # tradeoff as gosec-task.yaml's `go install ...@latest`: no
-        # persistent cache workspace bound to this task, so every run
-        # re-installs).
-        cargo install cargo-audit --locked 2>/dev/null || true
+        # Not part of the default toolchain -- installed on the fly, pinned
+        # via toolVersions like every other scanner in the fleet (gosec,
+        # bandit, eslint) rather than floating to whatever's newest on
+        # crates.io -- a silent version bump could change finding
+        # counts/format with no corresponding, reviewable version bump
+        # anywhere. No persistent cache workspace bound to this task, so
+        # every run re-installs regardless.
+        cargo install cargo-audit --version 0.22.2 --locked 2>/dev/null || true
         export PATH="$HOME/.cargo/bin:$PATH"
         cargo audit --json --file "$(dirname "$(params.build-file)")/Cargo.lock" 2>/dev/null \
           > $(workspaces.results.path)/sast/cargo-audit.json \
@@ -861,6 +874,18 @@ spec:
         #!/bin/sh
         mkdir -p $(workspaces.results.path)/sast
         # No SEMGREP_APP_TOKEN -- uses free public rules
+        # --config auto fetches the current ruleset live from semgrep.dev's
+        # registry on every run -- the 1.77.0 image tag above
+        # pins the semgrep BINARY, not this. Two identical commits scanned
+        # on different days can produce different finding counts with no
+        # corresponding version bump anywhere in values.yaml. Deliberate,
+        # accepted tradeoff, not an oversight: pinning to a specific
+        # published ruleset (--config r/...) would make results
+        # reproducible but freezes out new/updated rule coverage (new CVE
+        # patterns, newly-added language support) until someone manually
+        # bumps it -- for a SAST scanner specifically, staying current with
+        # upstream's rule additions was judged more valuable than strict
+        # run-to-run reproducibility of finding counts.
         semgrep \
           --config auto \
           --sarif \
@@ -3236,9 +3261,25 @@ spec:
     # Dockerfile linting (hadolint) run in their own pods before this task.
     - name: build-local
       image: k8secops/k8secops:gitops-builder-1.0.0
+      # Root is a real Kaniko requirement (building images means writing
+      # arbitrary file ownership/permissions into the layers it produces),
+      # unlike every other step in this fleet which drops to a non-root
+      # UID. NOT dropping capabilities here despite that convention --
+      # Kaniko needs several (at minimum CAP_CHOWN/CAP_DAC_OVERRIDE/
+      # CAP_FOWNER/CAP_SETUID/CAP_SETGID for layer construction; possibly
+      # more depending on what a given Dockerfile's base image needs) and
+      # guessing the exact minimal set without a real build-correctness
+      # test against a variety of Dockerfiles risks silently breaking
+      # image builds platform-wide -- worse than leaving the full set.
+      # seccompProfile is a safe, broadly-compatible addition on its own
+      # (RuntimeDefault doesn't restrict the specific syscalls Kaniko's
+      # layer-construction/chroot-like operations need, and is already
+      # proven working across the rest of this Tekton fleet).
       securityContext:
         runAsUser: 0
         allowPrivilegeEscalation: false
+        seccompProfile:
+          type: RuntimeDefault
       computeResources:
         requests: {cpu: "500m", memory: "1Gi"}
         limits:   {cpu: "2000m", memory: "4Gi"}
@@ -3414,6 +3455,7 @@ spec:
       script: |
         #!/usr/bin/env python3
         import json, os, pathlib
+        from xml.sax.saxutils import quoteattr as _xml_attr
 
         manifest = json.loads('''$(params.extra-creds-manifest)''')
         creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
@@ -3428,12 +3470,21 @@ spec:
             blocks = []
             for cred in manifest:
                 name = cred["name"]
+                # matchId is validated elsewhere (constants_extra_creds.py's
+                # _MATCH_ID regex) before it ever reaches a Tekton param, so it's
+                # already safe as an XML tag name. user/token are opaque credential
+                # values with no such validation -- an app admin's own credential
+                # entry containing a literal `"` or `&` would otherwise break or
+                # inject into this XML (a token with a stray `"` closing the
+                # attribute early, for instance). quoteattr() escapes AND quotes
+                # in one call, correctly handling embedded quote characters either
+                # way (it picks ' or " as the wrapping quote based on content).
                 user = (creds_dir / f"{name}-username").read_text().strip()
                 token = (creds_dir / f"{name}-token").read_text().strip()
                 blocks.append(
                     f"    <{cred['matchId']}>\n"
-                    f"      <add key=\"Username\" value=\"{user}\" />\n"
-                    f"      <add key=\"ClearTextPassword\" value=\"{token}\" />\n"
+                    f"      <add key=\"Username\" value={_xml_attr(user)} />\n"
+                    f"      <add key=\"ClearTextPassword\" value={_xml_attr(token)} />\n"
                     f"    </{cred['matchId']}>")
             (nuget_dir / "NuGet.Config").write_text(
                 "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<configuration>\n"
@@ -4464,6 +4515,7 @@ spec:
       script: |
         #!/usr/bin/env python3
         import json, os, pathlib
+        from urllib.parse import quote as _url_quote
 
         manifest = json.loads('''$(params.extra-creds-manifest)''')
         creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
@@ -4478,7 +4530,14 @@ spec:
                 name, host = cred["name"], cred["matchId"]
                 user = (creds_dir / f"{name}-username").read_text().strip()
                 token = (creds_dir / f"{name}-token").read_text().strip()
-                urls.append(f"https://{user}:{token}@{host}/simple/")
+                # quote(..., safe='') percent-encodes everything outside
+                # [A-Za-z0-9_.-~], including /, @, : (which would otherwise
+                # break the https://user:token@host/ URL structure or
+                # misdirect pip's auth) AND a bare ' (which would otherwise
+                # break out of this file's own single-quoted shell export
+                # below).
+                user_q, token_q = _url_quote(user, safe=""), _url_quote(token, safe="")
+                urls.append(f"https://{user_q}:{token_q}@{host}/simple/")
             env_file = home / ".pip-extra-creds.env"
             env_file.write_text(f"export PIP_EXTRA_INDEX_URL='{' '.join(urls)}'\n")
             print(f"Wrote {len(manifest)} pip private-index credential(s) to {env_file}")
@@ -4832,124 +4891,6 @@ spec:
         echo """ Rust compile complete -- binaries: """
         ls -la ./bin/ 2>/dev/null || echo "(none found under target/release -- library-only crate?)"
 
-# Source: platform/tekton/tasks/build/compile-task.yaml
----
-# "" Language Compile Task """"""""""""""""""""""""""""""""""
-# Compiles application source into artifacts (JAR/WAR/dist) before tests.
-# Results are written to the shared `source` workspace so unit-tests and
-# Kaniko (build-image-local) can consume them without recompiling.
-apiVersion: tekton.dev/v1
-kind: Task
-metadata:
-  name: gitops-lang-compile
-  namespace: gitops-core
-  labels:
-    gitops-platform.io/stage: compile
-spec:
-  params:
-    - name: build-tool
-      default: "maven"
-    - name: build-version
-      default: "21"
-    - name: build-file
-      default: "pom.xml"
-  workspaces:
-    - name: source
-  steps:
-    - name: compile
-      # Fixed image (not $(params.build-version)): that param holds language
-      # runtime versions (e.g. python 3.12, go 1.22, dotnet 10.0) which don't
-      # correspond to eclipse-temurin tags. Non-maven/gradle build tools skip
-      # this step's actual work (see case below), so any JDK image suffices.
-      image: k8secops/k8secops:maven-3.9-eclipse-temurin-21
-      workingDir: $(workspaces.source.path)
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        allowPrivilegeEscalation: false
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-      computeResources:
-        requests: {cpu: "500m", memory: "1Gi"}
-        limits:   {cpu: "2000m", memory: "3Gi"}
-      script: |
-        #!/bin/bash
-        set -e
-        BUILD_TOOL="$(params.build-tool)"
-        BUILD_FILE="$(params.build-file)"
-
-        echo "-- Compile stage --  build-tool=$BUILD_TOOL"
-
-        case "$BUILD_TOOL" in
-          maven)
-            EXTRA=""
-            [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "pom.xml" ] && EXTRA="-f $BUILD_FILE"
-            echo """ Maven: compiling (skip tests) """
-            mvn package -DskipTests -B $EXTRA
-            echo ""
-            echo """ Artifacts produced: """
-            find . -name "*.jar" -o -name "*.war" -o -name "*.ear" 2>/dev/null \
-              | grep -v "\.m2\|test-classes\|/original-" | sort \
-              | while read f; do
-                  SIZE=$(du -sh "$f" 2>/dev/null | cut -f1)
-                  echo "  $SIZE  $f"
-                done
-            ;;
-          gradle)
-            EXTRA=""
-            [ -n "$BUILD_FILE" ] && [ "$BUILD_FILE" != "build.gradle" ] && EXTRA="-b $BUILD_FILE"
-            echo """ Gradle: assembling (skip tests) """
-            ./gradlew assemble $EXTRA
-            echo ""
-            echo """ Artifacts produced: """
-            find . -name "*.jar" -o -name "*.war" 2>/dev/null \
-              | grep -v "/test" | sort \
-              | while read f; do
-                  SIZE=$(du -sh "$f" 2>/dev/null | cut -f1)
-                  echo "  $SIZE  $f"
-                done
-            ;;
-          npm)
-            if command -v npm >/dev/null 2>&1; then
-              echo """ npm: installing and building """
-              npm install --silent && npm run build --if-present
-            else
-              echo """ npm compile: skipped (npm not in this image -- handled by multi-stage Dockerfile) """
-            fi
-            ;;
-          pip|python)
-            echo """ Python: no compile step -- source copied directly into image """
-            ;;
-          go)
-            if command -v go >/dev/null 2>&1; then
-              echo """ Go: building """
-              go build ./...
-            else
-              echo """ Go compile: skipped (use multi-stage Dockerfile with RUN go build) """
-            fi
-            ;;
-          dotnet)
-            if command -v dotnet >/dev/null 2>&1; then
-              echo """ .NET: publishing """
-              dotnet publish -c Release -o ./publish --nologo -q
-            else
-              echo """ dotnet compile: skipped (dotnet not in this image -- handled by multi-stage Dockerfile) """
-            fi
-            ;;
-          none|skip|"")
-            echo """ Compile step skipped (build-tool=none) """
-            ;;
-          *)
-            echo """ Unknown build-tool=$BUILD_TOOL -- skipping compile """
-            ;;
-        esac
-
-        echo ""
-        echo """ Compile stage complete """
-
 # Source: platform/tekton/tasks/build/compile-typescript-task.yaml
 ---
 apiVersion: tekton.dev/v1
@@ -4973,6 +4914,9 @@ spec:
     - name: extra-creds-manifest
       default: "[]"
       description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
+    - name: package-cache-url
+      default: ""
+      description: "Base URL of the platform's dependency-package cache (package-cache-server.yaml). Empty or unreachable falls back to the public npm registry directly."
   workspaces:
     - name: source
     - name: npm-cache
@@ -5083,6 +5027,21 @@ spec:
           export npm_config_cache="$HOME/.npm"
         fi
         mkdir -p "$npm_config_cache"
+
+        # Same package-cache mirror as compile-nodejs-task.yaml -- reachability-
+        # probed first (short timeout) so a down cache pod falls back to the
+        # real npm registry instead of failing the build. Appends to .npmrc
+        # (not overwrite) since materialize-build-creds may have already
+        # written per-host auth-token lines there for a private registry.
+        # wget (BusyBox), not curl -- node:*-alpine doesn't include curl.
+        if [ -n "$(params.package-cache-url)" ] && \
+           wget -q --spider -T 2 "$(params.package-cache-url)/npm/"; then
+          echo "registry=$(params.package-cache-url)/npm/" >> "$HOME/.npmrc"
+          export YARN_NPM_REGISTRY_SERVER="$(params.package-cache-url)/npm/"
+          echo "Using package cache mirror for npm registry: $(params.package-cache-url)/npm/"
+        else
+          echo "Package cache unreachable or not configured -- using npm registry directly"
+        fi
 
         # Per-build-tool install + explicit type-check + build, one small
         # focused script per tool under scripts/typescript/ -- same
@@ -5517,6 +5476,7 @@ spec:
           value: "$(workspaces.registry-credentials.path)"
       script: |
         #!/bin/sh
+        set -e
         if [ ! -f /cosign-keys/cosign.key ]; then
           echo "cosign-keys secret not present -- cannot sign (signing was required)"
           exit 1
