@@ -306,7 +306,7 @@ spec:
       script: |
         #!/bin/bash
         mkdir -p "$HOME"
-        pip install --quiet --user bandit[sarif] --break-system-packages
+        pip install --quiet --user "bandit[sarif]==1.9.4" --break-system-packages
         mkdir -p $(workspaces.results.path)/sast
         python3 -m bandit -r . -f sarif -o $(workspaces.results.path)/sast/bandit.sarif \
           -l MEDIUM -i MEDIUM \
@@ -520,8 +520,8 @@ spec:
         npm config set prefix "$HOME/.npm-global" 2>/dev/null || true
         export PATH="$HOME/.npm-global/bin:$PATH"
         npm install --global --silent \
-          eslint eslint-plugin-security \
-          eslint-plugin-no-unsanitized 2>/dev/null || true
+          eslint@10.7.0 eslint-plugin-security@4.0.1 \
+          eslint-plugin-no-unsanitized@4.1.5 2>/dev/null || true
         mkdir -p $(workspaces.results.path)/sast
         cat > /tmp/eslint-sec.json << 'EOF'
         {
@@ -595,7 +595,7 @@ spec:
       script: |
         #!/bin/sh
         mkdir -p "$HOME"
-        go install github.com/securego/gosec/v2/cmd/gosec@latest 2>/dev/null || true
+        go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0 2>/dev/null || true
         export PATH="$HOME/go/bin:$PATH"
         mkdir -p $(workspaces.results.path)/sast
         gosec -fmt sarif -out $(workspaces.results.path)/sast/gosec.sarif \
@@ -1545,14 +1545,14 @@ spec:
         # be wasted work anyway).
         if [ ! -f $DB_FILE ]; then
           echo 'OWASP SKIP: NVD database not available in this run (cache server not yet warm or unreachable)'
-          echo eyJzdGF0dXMiOiJza2lwcGVkIiwicmVhc29uIjoiZGJfbm90X2ZvdW5kIn0= | base64 -d > $STATUS_FILE
+          printf '%s' '{"status":"skipped","reason":"db_not_found"}' > $STATUS_FILE
           echo -n 0 > $(results.VULN_COUNT.path)
           exit 0
         fi
-        
+
         DB_SIZE=$(du -sh $DB_FILE 2>/dev/null | cut -f1 || echo unknown)
         echo OWASP: NVD database ready $DB_SIZE - running scan with --noupdate
-        echo eyJzdGF0dXMiOiJydW5uaW5nIn0= | base64 -d > $STATUS_FILE
+        printf '%s' '{"status":"running"}' > $STATUS_FILE
         
         timeout 600 \
           /usr/share/dependency-check/bin/dependency-check.sh \
@@ -1566,10 +1566,25 @@ spec:
           2>&1 | tail -20
         
         REPORT=$RESULTS_DIR/dependency-check-report.json
-        
-        echo aW1wb3J0IGpzb24sc3lzCnIsc2Y9c3lzLmFyZ3ZbMV0sc3lzLmFyZ3ZbMl0KY250PTAKdHJ5OgogICAgZD1qc29uLmxvYWQob3BlbihyKSkKICAgIGNudD1zdW0obGVuKHguZ2V0KCd2dWxuZXJhYmlsaXRpZXMnLFtdKSlmb3IgeCBpbiBkLmdldCgnZGVwZW5kZW5jaWVzJyxbXSkpCiAgICBvcGVuKHNmLCd3Jykud3JpdGUoanNvbi5kdW1wcyh7J3N0YXR1cyc6J2NvbXBsZXRlZCcsJ3Z1bG5fY291bnQnOmNudH0pKQogICAgc3o9c3RyKHJvdW5kKF9faW1wb3J0X18oJ29zJykucGF0aC5nZXRzaXplKHIpLzEwMjQsMSkpCiAgICBwcmludCgnT1dBU1A6ICcrc3RyKGNudCkrJyB2dWxuZXJhYmlsaXRpZXMgLSByZXBvcnQgJytzeisnIEtCJykKZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOgogICAgb3BlbihzZiwndycpLndyaXRlKGpzb24uZHVtcHMoeydzdGF0dXMnOidub19yZXBvcnQnLCdyZWFzb24nOnN0cihlKX0pKQogICAgcHJpbnQoJ09XQVNQIFdBUk46ICcrc3RyKGUpKQpzeXMuc3Rkb3V0LmZsdXNoKCkKd2l0aCBvcGVuKCcvdG1wL19vZGNfY250JywndycpIGFzIGY6CiAgICBmLndyaXRlKHN0cihjbnQpKQo= | base64 -d > /tmp/_odc.py
-        python3 /tmp/_odc.py $REPORT $STATUS_FILE 2>/dev/null || true
-        COUNT=$(cat /tmp/_odc_cnt 2>/dev/null || echo 0)
+
+        # Informational status prints go to stderr (still visible in the pod
+        # log) so stdout carries only the final count -- cleanly capturable
+        # via command substitution below without a separate temp file.
+        COUNT=$(python3 -c "
+        import json, sys
+        r, sf = '$REPORT', '$STATUS_FILE'
+        cnt = 0
+        try:
+            d = json.load(open(r))
+            cnt = sum(len(x.get('vulnerabilities', [])) for x in d.get('dependencies', []))
+            open(sf, 'w').write(json.dumps({'status': 'completed', 'vuln_count': cnt}))
+            sz = round(__import__('os').path.getsize(r) / 1024, 1)
+            print(f'OWASP: {cnt} vulnerabilities - report {sz} KB', file=sys.stderr)
+        except Exception as e:
+            open(sf, 'w').write(json.dumps({'status': 'no_report', 'reason': str(e)}))
+            print(f'OWASP WARN: {e}', file=sys.stderr)
+        print(cnt)
+        " || echo 0)
         echo -n $COUNT > $(results.VULN_COUNT.path)
         exit 0
 
@@ -3697,6 +3712,9 @@ spec:
     - name: goprivate
       default: ""
       description: "Comma-joined module-path prefixes for GOPRIVATE -- non-sensitive hostnames, baked in per-app by pipeline_builder.py. Empty for apps with no private Go module credential."
+    - name: package-cache-url
+      default: ""
+      description: "Base URL of the platform's dependency-package cache (package-cache-server.yaml). Empty falls back to the public Go module proxy directly."
   workspaces:
     - name: source
     - name: go-cache
@@ -3844,6 +3862,21 @@ spec:
 
         mkdir -p "$GOPATH/pkg/mod" "$GOCACHE"
 
+        # Route through the platform's package cache first, falling back to
+        # the real public Go proxy on ANY failure (not just a 404/410) --
+        # "|" between entries means fall back on any error including
+        # connection refused, "," only falls back on a proper not-found
+        # response. Verified live: with "," a completely unreachable first
+        # entry hard-fails the whole build instead of falling through, so
+        # using it here would mean a down cache pod breaks every Go build
+        # platform-wide -- "|" was confirmed to correctly fall through in
+        # that same scenario. GOPRIVATE-matched modules bypass GOPROXY
+        # entirely regardless of this setting, so private module handling
+        # above is unaffected.
+        if [ -n "$(params.package-cache-url)" ]; then
+          export GOPROXY="$(params.package-cache-url)/go|https://proxy.golang.org,direct"
+        fi
+
         go mod download
         go build ./...
         # Final, copyable artifact for verify-artifacts / the Dockerfile's
@@ -3878,6 +3911,9 @@ spec:
     - name: extra-creds-manifest
       default: "[]"
       description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
+    - name: package-cache-url
+      default: ""
+      description: "Base URL of the platform's dependency-package cache (package-cache-server.yaml). Empty or unreachable falls back to Maven Central directly. Maven build-tool only."
   workspaces:
     - name: source
     - name: maven-cache
@@ -3922,9 +3958,10 @@ spec:
         home = pathlib.Path(os.environ["HOME"])
         home.mkdir(parents=True, exist_ok=True)
 
-        if not manifest:
+        if not manifest and build_tool != "maven":
             print("No extra build-artifact-repo credentials declared -- skipping")
-        elif build_tool == "maven":
+
+        if build_tool == "maven":
             m2 = home / ".m2"
             m2.mkdir(parents=True, exist_ok=True)
             servers = []
@@ -3936,9 +3973,40 @@ spec:
                     f"    <server>\n      <id>{cred['matchId']}</id>\n"
                     f"      <username>{user}</username>\n      <password>{token}</password>\n"
                     f"    </server>")
-            (m2 / "settings.xml").write_text(
-                "<settings>\n  <servers>\n" + "\n".join(servers) + "\n  </servers>\n</settings>\n")
-            print(f"Wrote {len(manifest)} Maven <server> credential(s) to {m2}/settings.xml")
+            if manifest:
+                print(f"Wrote {len(manifest)} Maven <server> credential(s)")
+
+            # Mirror only the built-in "central" repo (Maven's super-pom
+            # default id) through the platform's package cache -- never a
+            # custom <repository> a customer's own pom.xml declares, so a
+            # private/company Nexus etc. is untouched. Reachability-probed
+            # first (short timeout) rather than unconditionally pointed at
+            # the cache, so a down cache pod degrades to Maven Central
+            # directly instead of failing the build.
+            mirrors = ""
+            package_cache_url = "$(params.package-cache-url)"
+            if package_cache_url:
+                import urllib.request
+                try:
+                    urllib.request.urlopen(f"{package_cache_url}/maven/", timeout=2)
+                    mirrors = (
+                        "  <mirrors>\n    <mirror>\n"
+                        "      <id>gitops-package-cache</id>\n"
+                        "      <mirrorOf>central</mirrorOf>\n"
+                        f"      <url>{package_cache_url}/maven/</url>\n"
+                        "    </mirror>\n  </mirrors>\n"
+                    )
+                    print(f"Using package cache mirror for Maven Central: {package_cache_url}/maven/")
+                except Exception as e:
+                    print(f"Package cache unreachable ({e}) -- using Maven Central directly")
+
+            if servers or mirrors:
+                settings = "<settings>\n"
+                if servers:
+                    settings += "  <servers>\n" + "\n".join(servers) + "\n  </servers>\n"
+                settings += mirrors + "</settings>\n"
+                (m2 / "settings.xml").write_text(settings)
+                print(f"Wrote {m2}/settings.xml")
         elif build_tool == "gradle":
             # Gradle's own documented convention: ORG_GRADLE_PROJECT_xxx env
             # vars become project property `xxx` automatically. The customer's
@@ -4146,6 +4214,9 @@ spec:
     - name: extra-creds-manifest
       default: "[]"
       description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
+    - name: package-cache-url
+      default: ""
+      description: "Base URL of the platform's dependency-package cache (package-cache-server.yaml). Empty or unreachable falls back to the public npm registry directly."
   workspaces:
     - name: source
     - name: npm-cache
@@ -4290,6 +4361,24 @@ spec:
           export npm_config_cache="$HOME/.npm"
         fi
         mkdir -p "$npm_config_cache"
+
+        # Route through the platform's package cache, reachability-probed
+        # first (short timeout) so a down cache pod falls back to the real
+        # npm registry instead of failing the build. Appends to .npmrc
+        # (not overwrite) since materialize-build-creds may have already
+        # written per-host auth-token lines there for a private registry --
+        # this "registry=" default line never overrides those, it only sets
+        # what npm/pnpm/yarn-classic use for anything not otherwise scoped.
+        # Yarn Berry doesn't read .npmrc for its registry, hence the env var too.
+        # wget (BusyBox), not curl -- node:*-alpine doesn't include curl.
+        if [ -n "$(params.package-cache-url)" ] && \
+           wget -q --spider -T 2 "$(params.package-cache-url)/npm/"; then
+          echo "registry=$(params.package-cache-url)/npm/" >> "$HOME/.npmrc"
+          export YARN_NPM_REGISTRY_SERVER="$(params.package-cache-url)/npm/"
+          echo "Using package cache mirror for npm registry: $(params.package-cache-url)/npm/"
+        else
+          echo "Package cache unreachable or not configured -- using npm registry directly"
+        fi
 
         # Each build tool's actual logic lives in its own small, focused
         # script under scripts/nodejs/ -- open exactly the one you need to
@@ -4560,6 +4649,9 @@ spec:
     - name: extra-creds-manifest
       default: "[]"
       description: "JSON list of [{name, matchId}] for app-declared build-artifact-repo credentials (extra credentials feature). Empty for apps that haven't configured any."
+    - name: package-cache-url
+      default: ""
+      description: "Base URL of the platform's dependency-package cache (package-cache-server.yaml). Empty or unreachable falls back to the public crates.io registry directly."
   workspaces:
     - name: source
     - name: cargo-cache
@@ -4658,7 +4750,12 @@ spec:
         - name: HOME
           value: "$(workspaces.source.path)/.compile-home"
       script: |
-        #!/bin/sh
+        #!/bin/bash
+        # bash, not sh/dash -- the package-cache reachability probe below
+        # needs /dev/tcp, which dash doesn't support and rust:*-slim has
+        # neither curl nor wget to substitute (unlike the other compile
+        # tasks' probes). Rest of the script is plain POSIX-compatible
+        # syntax, so this is a no-op shell-portability-wise.
         set -e
         echo """ Rust compile: version=$(params.build-version) """
 
@@ -4683,6 +4780,32 @@ spec:
         # copy it into the effective CARGO_HOME if they differ (cache-workspace case).
         if [ "$CARGO_HOME" != "$HOME/.cargo" ] && [ -f "$HOME/.cargo/credentials.toml" ]; then
           cp "$HOME/.cargo/credentials.toml" "$CARGO_HOME/credentials.toml"
+        fi
+
+        # Same package-cache mirror as go/java/nodejs (see package-cache-server.yaml)
+        # via Cargo's source-replacement mechanism -- sparse-index protocol, so no
+        # separate git-clone of the whole crates.io index. No curl/wget in this
+        # image, so the reachability probe uses bash's /dev/tcp against the
+        # cache's host:port parsed out of the URL.
+        PACKAGE_CACHE_URL="$(params.package-cache-url)"
+        if [ -n "$PACKAGE_CACHE_URL" ]; then
+          cache_hostport="${PACKAGE_CACHE_URL#*://}"
+          cache_hostport="${cache_hostport%%/*}"
+          cache_host="${cache_hostport%%:*}"
+          cache_port="${cache_hostport##*:}"
+          if timeout 2 bash -c "echo > /dev/tcp/$cache_host/$cache_port" 2>/dev/null; then
+            {
+              printf '[source.crates-io]\n'
+              printf 'replace-with = "gitops-package-cache"\n\n'
+              printf '[source.gitops-package-cache]\n'
+              printf 'registry = "sparse+%s/cargo-index/"\n' "$PACKAGE_CACHE_URL"
+            } >> "$CARGO_HOME/config.toml"
+            echo "Using package cache mirror for crates.io: $PACKAGE_CACHE_URL/cargo-index/"
+          else
+            echo "Package cache unreachable -- using crates.io directly"
+          fi
+        else
+          echo "No package cache configured -- using crates.io directly"
         fi
 
         # BUILD_FILE from ai-preflight is always repo-root-relative, but
@@ -6365,7 +6488,12 @@ spec:
                     with open(tmp, "wb") as f:
                         f.write(resp.read())
                 with tarfile.open(tmp) as tf:
-                    tf.extractall(dest)
+                    # filter="data" rejects path traversal, absolute paths, and
+                    # symlinks/device files escaping `dest` -- this tarball comes
+                    # from the cache server over plain HTTP with no integrity
+                    # check, so a compromised/MITM'd server response shouldn't be
+                    # able to write outside the per-run vulndb-cache PVC.
+                    tf.extractall(dest, filter="data")
                 size_mb = os.path.getsize(tmp) // 1024 // 1024
                 print(f"vulndb-seed: restored {name} cache from {url} ({size_mb} MB)")
             except Exception as e:
@@ -6523,6 +6651,20 @@ spec:
 
         # -- Collect scan gaps (skipped/unavailable tools with reasons) ----
         scan_gaps = []
+        # A category whose sub-task crashed/OOMKilled/never wrote its output file
+        # defaults to 0 findings + verdict PROCEED above (categories[cat]["ran"] is
+        # False) so the pipeline never blocks on infrastructure flakiness -- but
+        # left unflagged, that default is indistinguishable from a genuinely clean
+        # scan of that category. Surface it as a scan gap (the same mechanism
+        # already used for owasp-dc/preflight below) so a human reviewing the gate
+        # sees "this category never actually ran", not a silent zero.
+        for cat_name, cat_data in categories.items():
+            if cat_data.get("ran") is False:
+                scan_gaps.append({
+                    "tool": f"ai-analyze-{cat_name}",
+                    "label": cat_name.capitalize(),
+                    "reason": cat_data.get("summary", "Category analysis did not complete."),
+                })
         sca_cat = categories.get('sca', {})
         if sca_cat.get('owasp_skipped') and sca_cat.get('owasp_skip_reason'):
             scan_gaps.append({
@@ -6599,18 +6741,20 @@ spec:
                 return "B"
             return "A"
 
-        def compute_verdict(critical, high, medium, tests_failed, build_failed):
+        def compute_verdict(critical, high, medium, tests_failed, build_failed, incomplete_scan):
             if build_failed or critical > 0 or tests_failed > 0:
                 return "DO_NOT_PROCEED"
-            if high > 0 or medium > 3:
+            if high > 0 or medium > 3 or incomplete_scan:
                 return "PROCEED_WITH_CAUTION"
             return "PROCEED"
 
-        build_failed = len(pipeline_failures) > 0
-        risk_grade   = compute_risk_grade(total_counts["critical"], total_counts["high"],
-                                          total_counts["medium"], total_counts["tests_failed"])
-        verdict      = compute_verdict(total_counts["critical"], total_counts["high"],
-                                       total_counts["medium"], total_counts["tests_failed"], build_failed)
+        build_failed    = len(pipeline_failures) > 0
+        incomplete_scan = any(c.get("ran") is False for c in categories.values())
+        risk_grade      = compute_risk_grade(total_counts["critical"], total_counts["high"],
+                                             total_counts["medium"], total_counts["tests_failed"])
+        verdict         = compute_verdict(total_counts["critical"], total_counts["high"],
+                                          total_counts["medium"], total_counts["tests_failed"],
+                                          build_failed, incomplete_scan)
 
         #  Call AI for synthesis (cheap  only compact summaries) 
         cat_summary_lines = []

@@ -92,6 +92,8 @@ EXISTING_DB_PWD=$(kubectl get secret gitops-db-internal -n gitops-db \
   -o jsonpath='{.data.POSTGRES_PASSWORD}' 2>/dev/null | base64 -d 2>/dev/null || true)
 EXISTING_SECRET_KEY=$(kubectl get secret gitops-platform-secrets -n "${NS_CORE}" \
   -o jsonpath='{.data.secretKey}' 2>/dev/null | base64 -d 2>/dev/null || true)
+EXISTING_CRED_ENC_KEY=$(kubectl get secret gitops-platform-secrets -n "${NS_CORE}" \
+  -o jsonpath='{.data.credentialEncryptionKey}' 2>/dev/null | base64 -d 2>/dev/null || true)
 
 # ── UI admin password ──────────────────────────────────────────────────────────
 if [[ -n "${EXISTING_UI_PWD:-}" ]]; then
@@ -166,6 +168,12 @@ OPERATOR_API_TOKEN="${EXISTING_TOKEN:-$(gen_token)}"
 SONARQUBE_PASSWORD="$(gen_token | head -c 20)"
 DB_PASSWORD="${EXISTING_DB_PWD:-$(gen_token | head -c 24)}"
 SECRET_KEY="${EXISTING_SECRET_KEY:-$(gen_token)}"
+# Generated independently of OPERATOR_API_TOKEN so the two can be rotated
+# separately -- without its own key, credential-at-rest encryption falls back
+# to deriving one from OPERATOR_API_TOKEN, meaning any future `make
+# rotate-token`/token rotation would make every already-stored app credential
+# (git/registry/AI tokens) permanently undecryptable.
+CREDENTIAL_ENCRYPTION_KEY="${EXISTING_CRED_ENC_KEY:-$(gen_token)}"
 
 echo ""
 info "Setup complete — proceeding with installation."
@@ -205,9 +213,13 @@ else
   info "Tekton ready"
 fi
 
-# Required: allow Tekton's own side-containers to run
+# tekton-pipelines hosts only the Tekton controller/webhook Deployments --
+# every actual TaskRun/PipelineRun pod runs in its own ephemeral per-run
+# namespace (provisioned/labeled independently), so this namespace itself
+# needs no elevated PSA level. baseline (not privileged) is sufficient and
+# matches cluster-setup/01-namespaces.yaml's posture for the same namespace.
 kubectl label namespace "$NS_TEKTON" \
-  pod-security.kubernetes.io/enforce=privileged \
+  pod-security.kubernetes.io/enforce=baseline \
   pod-security.kubernetes.io/enforce-version=latest \
   --overwrite >/dev/null
 
@@ -256,6 +268,7 @@ cat > "${TMP_VALUES}" <<EOF
 operator:
   apiToken: '$(yesc "${OPERATOR_API_TOKEN}")'
   secretKey: '$(yesc "${SECRET_KEY}")'
+  credentialEncryptionKey: '$(yesc "${CREDENTIAL_ENCRYPTION_KEY}")'
 ui:
   auth:
     username: '$(yesc "${UI_ADMIN_USERNAME}")'
