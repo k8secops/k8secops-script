@@ -191,6 +191,29 @@ kubectl label namespace "$NS_TOOLING" \
   pod-security.kubernetes.io/enforce-version=latest \
   --overwrite >/dev/null
 
+# gitops-core runs only platform code we own (operator/controller/
+# webhook-api) -- every one of their pod templates already runs
+# non-root/no-priv-escalation/all-capabilities-dropped/seccomp, so
+# enforcing restricted costs nothing and closes the gap where this
+# namespace was otherwise relying on whatever PSA level the cluster
+# happens to default to.
+kubectl label namespace "$NS_CORE" \
+  pod-security.kubernetes.io/enforce=restricted \
+  pod-security.kubernetes.io/enforce-version=latest \
+  --overwrite >/dev/null
+
+# gitops-db can NOT be restricted -- the postgres:16 image's own
+# entrypoint starts its init container as root by design (runAsUser:0,
+# runAsNonRoot:false) and re-execs as postgres via gosu; restricted
+# would block it from ever starting. baseline is still real hardening
+# over the cluster's undeclared default and matches tekton-pipelines'
+# posture below (see helm/gitops-platform/templates/db/statefulset.yaml
+# for the full rationale).
+kubectl label namespace "$NS_DB" \
+  pod-security.kubernetes.io/enforce=baseline \
+  pod-security.kubernetes.io/enforce-version=latest \
+  --overwrite >/dev/null
+
 info "Pod Security labels applied"
 
 # ── Step 2: Tekton Pipelines ──────────────────────────────────────────────────
@@ -261,6 +284,22 @@ info "Sealed Secrets installed"
 # tekton.enabled=false: Tekton is already installed above — skip the hook.
 section "Step 4 — Installing GitOps Platform v${CHART_VERSION} from OCI"
 
+# rbacHardening installs a ValidatingAdmissionPolicy closing a defense-in-
+# depth gap around the operator/webhook-api ClusterRole (see values.yaml's
+# own comment on that key for the full rationale). The VAP API is beta on
+# 1.28/1.29 (often off by default on managed clusters) and GA from 1.30+ --
+# enabling it unconditionally would break installs on clusters where it's
+# unavailable, so detect support and enable it only when the API server
+# actually offers the resource.
+if kubectl api-resources --api-group=admissionregistration.k8s.io -o name 2>/dev/null \
+    | grep -qi '^validatingadmissionpolicies\.'; then
+  RBAC_HARDENING=true
+  info "ValidatingAdmissionPolicy supported — enabling rbacHardening"
+else
+  RBAC_HARDENING=false
+  warn "ValidatingAdmissionPolicy not available on this cluster (needs K8s 1.28+ with the beta feature enabled, GA from 1.30+) — rbacHardening left off. Consider upgrading or enabling the feature gate, then: helm upgrade gitops-platform ... --reuse-values --set rbacHardening.enabled=true"
+fi
+
 TMP_VALUES=$(mktemp)
 trap 'rm -f "${TMP_VALUES}"' EXIT
 
@@ -290,6 +329,8 @@ global:
     token: '$(yesc "${PRIVATE_REGISTRY_TOKEN:-}")'
 tekton:
   enabled: false
+rbacHardening:
+  enabled: ${RBAC_HARDENING}
 EOF
 
 # Pre-flight: remove any orphaned Helm-managed SAs left by a previous partial
