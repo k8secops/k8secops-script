@@ -62,10 +62,16 @@ info "Cluster: $(kubectl config current-context)"
 section "Step 1 — Generating password hash"
 
 OPERATOR_POD=$(kubectl get pod -n "${NS_OPERATOR}" \
-  -l app.kubernetes.io/name=gitops-platform-operator \
-  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || \
-  kubectl get pod -n "${NS_OPERATOR}" \
-  --no-headers -o custom-columns=':metadata.name' 2>/dev/null | grep operator | head -1)
+  -l app=gitops-operator \
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+if [[ -z "$OPERATOR_POD" ]]; then
+  # kubectl exits 0 even when the label selector above matches nothing, so
+  # this fallback needs its own explicit -z check rather than a `||` chain
+  # (a `||` never fires here -- confirmed live: an empty-but-successful
+  # jsonpath lookup short-circuits past it every time).
+  OPERATOR_POD=$(kubectl get pod -n "${NS_OPERATOR}" \
+    --no-headers -o custom-columns=':metadata.name' 2>/dev/null | grep operator | head -1)
+fi
 
 if [[ -z "$OPERATOR_POD" ]]; then
   echo -e "${RED}[ERROR]${NC} No operator pod found in ${NS_OPERATOR}." >&2
@@ -88,10 +94,12 @@ info "Hash generated (PBKDF2-HMAC-SHA256, 600k iterations)"
 section "Step 2 — Updating password in PostgreSQL"
 
 DB_POD=$(kubectl get pod -n gitops-db \
-  -l app.kubernetes.io/name=gitops-platform-postgresql \
-  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || \
-  kubectl get pod -n gitops-db --no-headers \
-  -o custom-columns=':metadata.name' 2>/dev/null | grep postgresql | head -1)
+  -l app=gitops-postgresql \
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+if [[ -z "$DB_POD" ]]; then
+  DB_POD=$(kubectl get pod -n gitops-db --no-headers \
+    -o custom-columns=':metadata.name' 2>/dev/null | grep postgresql | head -1)
+fi
 
 if [[ -z "$DB_POD" ]]; then
   echo -e "${RED}[ERROR]${NC} No PostgreSQL pod found in gitops-db." >&2
