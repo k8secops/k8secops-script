@@ -1339,6 +1339,13 @@ spec:
             - ALL
         seccompProfile:
           type: RuntimeDefault
+      env:
+        # Real container env var rather than BUILD_TOOL="$(params.build-tool)"
+        # inline below -- see test-nodejs-task.yaml for why the assignment
+        # line itself is the injection point when Tekton substitutes text
+        # directly into a script.
+        - name: BUILD_TOOL
+          value: "$(params.build-tool)"
       computeResources:
         requests: {cpu: "500m", memory: "1Gi"}
         limits:   {cpu: "2000m", memory: "3Gi"}
@@ -1351,7 +1358,6 @@ spec:
 
         # Compile -- skip tests, quiet. Each build tool's actual logic lives
         # in its own small, focused script under scripts/java/.
-        BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
         case "$BUILD_TOOL" in
           maven)
@@ -1790,6 +1796,12 @@ spec:
           value: "1"
         - name: DOTNET_CLI_TELEMETRY_OPTOUT
           value: "1"
+        # Real container env var rather than TEST_FILE="$(params.test-file)"
+        # inline below -- see test-nodejs-task.yaml for why the assignment
+        # line itself is the injection point when Tekton substitutes text
+        # directly into a script.
+        - name: TEST_FILE
+          value: "$(params.test-file)"
       computeResources:
         requests: {cpu: "500m", memory: "1Gi"}
         limits:   {cpu: "2000m", memory: "3Gi"}
@@ -1799,7 +1811,6 @@ spec:
         mkdir -p "$HOME"
         mkdir -p $(workspaces.results.path)/tests
         # Use test-file (test project .csproj) if specified; fall back to build-file
-        TEST_FILE="$(params.test-file)"
         if [ -z "$TEST_FILE" ]; then TEST_FILE="$(params.build-file)"; fi
         dotnet test \
           --logger "trx;LogFileName=$(workspaces.results.path)/tests/results.trx" \
@@ -2019,6 +2030,22 @@ spec:
         # results are parsed with awk/grep instead.
         - name: HOME
           value: "$(workspaces.results.path)/.go-home"
+        # Passed as a real container env var (set directly by Kubernetes, not
+        # substituted as text into this script) rather than referencing the
+        # test-pattern param inline below -- Tekton's param substitution is a
+        # textual replace into the script BEFORE the shell ever parses it, so
+        # an app-controlled testPattern value containing `;`/`|`/backticks
+        # would be interpreted as real shell syntax. Shell expansion of an
+        # already-set env var never re-parses its contents for
+        # metacharacters, so this closes the injection regardless of value
+        # content while still preserving word-splitting for legitimate
+        # space-separated multi-package patterns. (Deliberately not spelling
+        # out the dollar-paren param syntax here in prose -- Tekton's
+        # admission webhook validates every such-shaped string in the
+        # script, even inside comments, against declared params/workspaces/
+        # results, and rejects the whole Task if it doesn't match one.)
+        - name: TEST_PATTERN
+          value: "$(params.test-pattern)"
       script: |
         #!/bin/sh
         [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
@@ -2046,7 +2073,7 @@ spec:
             --junitfile $(workspaces.results.path)/tests/junit.xml \
             --format standard-quiet \
             -- -coverprofile=$(workspaces.results.path)/tests/coverage.out \
-            $(params.test-pattern) 2>&1; then
+            $TEST_PATTERN 2>&1; then
             RAN_OK=true
           elif [ -f $(workspaces.results.path)/tests/junit.xml ]; then
             # gotestsum exits non-zero when tests fail -- that's a normal
@@ -2056,7 +2083,7 @@ spec:
           fi
         else
           if go test -v -json -coverprofile=$(workspaces.results.path)/tests/coverage.out \
-            $(params.test-pattern) > $(workspaces.results.path)/tests/go-test.json 2>&1; then
+            $TEST_PATTERN > $(workspaces.results.path)/tests/go-test.json 2>&1; then
             RAN_OK=true
           elif [ -s $(workspaces.results.path)/tests/go-test.json ]; then
             RAN_OK=true
@@ -2271,13 +2298,20 @@ spec:
       computeResources:
         requests: {cpu: "500m", memory: "1Gi"}
         limits:   {cpu: "2000m", memory: "3Gi"}
+      env:
+        # Real container env vars rather than BUILD_TOOL="$(params.build-tool)"
+        # / TEST_MODULE="$(params.test-module)" inline below -- see
+        # test-nodejs-task.yaml for why the assignment line itself is the
+        # injection point when Tekton substitutes text directly into a script.
+        - name: BUILD_TOOL
+          value: "$(params.build-tool)"
+        - name: TEST_MODULE
+          value: "$(params.test-module)"
       script: |
         #!/bin/sh
         [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
         mkdir -p $(workspaces.results.path)/tests
-        BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
-        TEST_MODULE="$(params.test-module)"
         # Each build tool's actual logic lives in its own small, focused
         # script under scripts/java/ -- open exactly the one you need to
         # change, nothing else.
@@ -2541,11 +2575,28 @@ spec:
         # has no writable cache directory.
         - name: HOME
           value: "$(workspaces.results.path)/.npm-home"
+        # Set as real container env vars (Kubernetes assigns these directly,
+        # not by substituting text into the script) rather than assigning
+        # BUILD_TOOL/TEST_SCRIPT from the build-tool/test-script params
+        # inline below -- Tekton's param substitution happens as a textual
+        # replace BEFORE the shell parses this script, so a value containing
+        # a literal `"` would close that assignment's string early and let
+        # anything after it execute as a new shell command. Shell expansion
+        # of an already-set env var never re-parses its value for
+        # quotes/`;`/`|`/backticks, so this closes the injection.
+        # (Deliberately not spelling out the dollar-paren param syntax here
+        # in prose -- Tekton's admission webhook validates every such-shaped
+        # string in the script, even inside comments, against declared
+        # params/workspaces/results, and rejects the whole Task if it
+        # doesn't match one.)
+        - name: BUILD_TOOL
+          value: "$(params.build-tool)"
+        - name: TEST_SCRIPT
+          value: "$(params.test-script)"
       script: |
         #!/bin/sh
         [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
         mkdir -p "$HOME"
-        BUILD_TOOL="$(params.build-tool)"
 
         # Mirror compile-nodejs-task.yaml's own per-tool branching (including
         # `corepack enable` for pnpm, which is not preinstalled in the plain
@@ -2571,7 +2622,6 @@ spec:
         mkdir -p $(workspaces.results.path)/tests
 
         # Run using configured test script (default: test ' npm run test / yarn test)
-        TEST_SCRIPT="$(params.test-script)"
         TEST_SCRIPT="${TEST_SCRIPT:-test}"
         ${BUILD_TOOL} run "$TEST_SCRIPT" -- \
           --coverage \
@@ -2771,13 +2821,18 @@ spec:
         # `pip install --user` has nowhere writable to land.
         - name: HOME
           value: "$(workspaces.results.path)/.pytest-home"
+        # Real container env var rather than BUILD_TOOL="$(params.build-tool)"
+        # inline below -- see test-nodejs-task.yaml for why the assignment
+        # line itself is the injection point when Tekton substitutes text
+        # directly into a script.
+        - name: BUILD_TOOL
+          value: "$(params.build-tool)"
       script: |
         #!/bin/bash
         [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
         mkdir -p "$HOME"
         export PATH="$HOME/.local/bin:$PATH"
 
-        BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
         BUILD_CONTEXT="$(params.build-context)"
 
@@ -3047,6 +3102,12 @@ spec:
       env:
         - name: HOME
           value: "$(workspaces.results.path)/.rust-home"
+        # Real container env var rather than FILTER="$(params.test-pattern)"
+        # inline below -- see test-nodejs-task.yaml for why the assignment
+        # line itself is the injection point when Tekton substitutes text
+        # directly into a script.
+        - name: TEST_PATTERN
+          value: "$(params.test-pattern)"
       script: |
         #!/bin/sh
         [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
@@ -3066,7 +3127,7 @@ spec:
         # convention and means nothing to cargo -- treat it (and an empty
         # value) as "run everything", otherwise pass it through as cargo's
         # own substring test filter.
-        FILTER="$(params.test-pattern)"
+        FILTER="$TEST_PATTERN"
         if [ "$FILTER" = "./..." ] || [ -z "$FILTER" ]; then
           cargo test --release --manifest-path "$BUILD_FILE" 2>&1 | tee $(workspaces.results.path)/tests/output.txt || true
         else
@@ -3999,13 +4060,22 @@ spec:
       env:
         - name: HOME
           value: "$(workspaces.source.path)/.compile-home"
+        # Real container env var rather than build_tool = "$(params.build-tool)"
+        # inline below -- Tekton substitutes params as text BEFORE this
+        # script is parsed, so embedding one directly into a Python string
+        # literal lets a value containing a quote/triple-quote break out of
+        # the literal and inject arbitrary Python. Reading it from
+        # os.environ instead means the value only ever exists as ordinary
+        # string *data*, never as source text the interpreter parses.
+        - name: BUILD_TOOL
+          value: "$(params.build-tool)"
       script: |
         #!/usr/bin/env python3
         import json, os, pathlib
 
         manifest = json.loads('''$(params.extra-creds-manifest)''')
         creds_dir = pathlib.Path("$(workspaces.extra-build-creds.path)")
-        build_tool = "$(params.build-tool)"
+        build_tool = os.environ.get("BUILD_TOOL", "")
         home = pathlib.Path(os.environ["HOME"])
         home.mkdir(parents=True, exist_ok=True)
 
@@ -4142,10 +4212,15 @@ spec:
           value: "$(workspaces.source.path)/.compile-home"
         - name: GRADLE_USER_HOME
           value: "$(workspaces.source.path)/.gradle"
+        # Real container env var rather than BUILD_TOOL="$(params.build-tool)"
+        # inline below -- see test-nodejs-task.yaml for why the assignment
+        # line itself is the injection point when Tekton substitutes text
+        # directly into a script.
+        - name: BUILD_TOOL
+          value: "$(params.build-tool)"
       script: |
         #!/bin/bash
         set -e
-        BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
         echo """ Java compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
 
@@ -4387,10 +4462,15 @@ spec:
         # and corepack all write cache/config to $HOME and fail without it.
         - name: HOME
           value: "$(workspaces.source.path)/.compile-home"
+        # Real container env var rather than BUILD_TOOL="$(params.build-tool)"
+        # inline below -- see test-nodejs-task.yaml for why the assignment
+        # line itself is the injection point when Tekton substitutes text
+        # directly into a script.
+        - name: BUILD_TOOL
+          value: "$(params.build-tool)"
       script: |
         #!/bin/sh
         set -e
-        BUILD_TOOL="$(params.build-tool)"
         echo """ Node.js compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
 
         [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
@@ -4603,10 +4683,15 @@ spec:
         # the source workspace for pip's own cache/config discovery.
         - name: HOME
           value: "$(workspaces.source.path)/.compile-home"
+        # Real container env var rather than BUILD_TOOL="$(params.build-tool)"
+        # inline below -- see test-nodejs-task.yaml for why the assignment
+        # line itself is the injection point when Tekton substitutes text
+        # directly into a script.
+        - name: BUILD_TOOL
+          value: "$(params.build-tool)"
       script: |
         #!/bin/sh
         set -e
-        BUILD_TOOL="$(params.build-tool)"
         BUILD_FILE="$(params.build-file)"
         echo """ Python compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
 
@@ -5006,10 +5091,15 @@ spec:
       env:
         - name: HOME
           value: "$(workspaces.source.path)/.compile-home"
+        # Real container env var rather than BUILD_TOOL="$(params.build-tool)"
+        # inline below -- see test-nodejs-task.yaml for why the assignment
+        # line itself is the injection point when Tekton substitutes text
+        # directly into a script.
+        - name: BUILD_TOOL
+          value: "$(params.build-tool)"
       script: |
         #!/bin/sh
         set -e
-        BUILD_TOOL="$(params.build-tool)"
         echo """ TypeScript compile: build-tool=$BUILD_TOOL version=$(params.build-version) """
 
         [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
@@ -5734,6 +5824,15 @@ spec:
           drop: [ALL]
         seccompProfile:
           type: RuntimeDefault
+      env:
+        # Real container env var rather than build_tool = "$(params.build-tool)"
+        # inline below -- Tekton substitutes params as text BEFORE this
+        # script is parsed, so embedding one directly into a Python string
+        # literal lets a value containing a quote break out of the literal
+        # and inject arbitrary Python. Reading it from os.environ instead
+        # means the value only ever exists as ordinary string data.
+        - name: BUILD_TOOL
+          value: "$(params.build-tool)"
       script: |
         #!/usr/bin/env python3
         # Hard-requires a pre-built, copyable artifact for every language --
@@ -5746,9 +5845,9 @@ spec:
         # repos, see the extra-credentials feature) reach the install step --
         # they're only available here, in the compile Task, never inside
         # Kaniko's separately-privileged build.
-        import pathlib, sys
+        import os, pathlib, sys
 
-        build_tool    = "$(params.build-tool)"
+        build_tool    = os.environ.get("BUILD_TOOL", "")
         language      = "$(params.language)"
         source_dir    = pathlib.Path("$(workspaces.source.path)")
         build_context = "$(params.build-context)"
@@ -9032,6 +9131,27 @@ spec:
       computeResources:
         requests: {cpu: "100m", memory: "128Mi"}
         limits:   {cpu: "300m", memory: "256Mi"}
+      env:
+        # Real container env vars rather than e.g. BUILD_TOOL = "$(params.build-tool)"
+        # inline in preflight.py -- Tekton substitutes params as text BEFORE
+        # the script is parsed, so embedding one directly into a Python
+        # string literal lets a value containing a literal `"` break out of
+        # the literal and inject arbitrary Python, before preflight.py's own
+        # _valid_path() allowlist ever runs on the value. Reading these from
+        # os.environ instead means each value only ever exists as ordinary
+        # string data at the point the interpreter parses the script.
+        - name: LANGUAGE
+          value: "$(params.language)"
+        - name: BUILD_TOOL
+          value: "$(params.build-tool)"
+        - name: BUILD_FILE_IN
+          value: "$(params.build-file)"
+        - name: BUILD_CONTEXT_IN
+          value: "$(params.build-context)"
+        - name: DOCKERFILE_PATH_IN
+          value: "$(params.dockerfile-path)"
+        - name: TEST_DIR_IN
+          value: "$(params.test-dir)"
       script: |
         #!/usr/bin/env python3
         import fnmatch, json, os, pathlib, re, sys, textwrap, time
@@ -9054,12 +9174,22 @@ spec:
             return bool(p) and bool(_SAFE_PATH.match(p)) and ".." not in p.split("/")
 
         SRC              = pathlib.Path("$(workspaces.source.path)")
-        LANGUAGE         = "$(params.language)"
-        BUILD_TOOL       = "$(params.build-tool)"
-        BUILD_FILE       = "$(params.build-file)"
-        BUILD_CONTEXT    = "$(params.build-context)"
-        DOCKERFILE_PATH  = "$(params.dockerfile-path)"
-        TEST_DIR         = "$(params.test-dir)"
+        # Read from env vars (set by ai-preflight.yaml's step-level `env:`) rather
+        # than embedding a param reference directly into these string literals --
+        # Tekton's substitution is a textual replace BEFORE this script is parsed,
+        # so a value containing a literal quote would break out of the literal and
+        # inject arbitrary Python, before _valid_path()/_gate() ever get a chance to
+        # run on it. os.environ.get() only ever hands back string data, never source
+        # text. (Avoid writing a literal dollar-paren param reference in comments
+        # here -- Tekton's admission webhook validates every such-shaped string in
+        # the script, even inside comments, against declared params/workspaces/
+        # results, and rejects the whole Task if it doesn't match one.)
+        LANGUAGE         = os.environ.get("LANGUAGE", "")
+        BUILD_TOOL       = os.environ.get("BUILD_TOOL", "")
+        BUILD_FILE       = os.environ.get("BUILD_FILE_IN", "")
+        BUILD_CONTEXT    = os.environ.get("BUILD_CONTEXT_IN", "")
+        DOCKERFILE_PATH  = os.environ.get("DOCKERFILE_PATH_IN", "")
+        TEST_DIR         = os.environ.get("TEST_DIR_IN", "")
         AI_RESULTS       = pathlib.Path("$(workspaces.ai-results.path)")
 
         def write_results(build_file, build_context, dockerfile_path, test_dir, note, flagged):
