@@ -213,6 +213,10 @@ When enabled, the AI analyses all findings after every scan and produces a **ris
 
 **No image reaches the registry without a human decision.** The reviewer sees the full AI report, risk grade, all findings, and test results before approving or rejecting. Every decision is logged.
 
+### Preparing your app repo
+
+Onboarding a Java/.NET/Python/Node/React/Next.js/Go/Rust/TypeScript/Terraform repo? See **[NOTES_TO_DEVELOPERS.md](NOTES_TO_DEVELOPERS.md)** for exactly what each language's pipeline expects — build tool/file conventions, how the unit-test stage invokes your test runner and what coverage format it expects, and the common per-language pitfalls (e.g. .NET's required app/test-project split, Rust's no-coverage-collected behavior).
+
 ---
 
 ## Uninstall

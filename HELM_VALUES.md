@@ -124,7 +124,9 @@ When in doubt, `helm get values gitops-platform -n gitops-core -a` shows the **f
 | `operator.pipelineTimeout` | `8h0m0s` | Overall Tekton `PipelineRun` timeout — must cover CI time *plus* however long a human takes to review the gate. On timeout, Tekton cancels the run and the platform tears down its namespace automatically (see the `--reuse-values` gotcha above if you change this on an existing install). |
 | `operator.externalUrl` | `""` | Public URL, e.g. `https://gitops.example.com`. Enables automatic git-provider webhook registration. |
 | `operator.webhookDeliveryInsecureSsl` | `false` | Only set `true` for a self-signed/dev tunnel cert. |
+| `operator.imageDigest` | `""` | Pin `operator.image` to a specific `sha256:...` digest instead of trusting the mutable tag. Renders as `image:tag@sha256:...`; blank (tag-only) is the default, unpinned behavior. |
 | `operator.ingress.*` | disabled | Standard ingress block: `enabled`, `className`, `host`, `annotations`, `tls.{enabled,secretName}`. |
+| `operator.ingress.allowInsecure` | `false` | **Install/upgrade fails closed** if `operator.ingress.enabled=true` with a `host` set but no `tls.enabled=true` — this route carries the login form and session cookie in plaintext otherwise. Set this `true` only if TLS is genuinely terminated upstream of this Ingress (e.g. an external load balancer/CDN inside a trusted network); it adds no protection itself. |
 
 ### `webhookApi` — optional split-out webhook/trigger service
 
@@ -134,10 +136,11 @@ Disabled by default — the operator serves everything standalone. See [Enabling
 |---|---|---|
 | `webhookApi.enabled` | `false` | |
 | `webhookApi.image` | `k8secops/k8secops:gitops-webhook-api-1.0.0` | |
+| `webhookApi.imageDigest` | `""` | Same digest-pinning mechanism as `operator.imageDigest`. |
 | `webhookApi.replicas` | `1` | Safe to run multiple — no cluster-scoped RBAC, no leader election. |
 | `webhookApi.resources` | `100m/128Mi` request, `500m/512Mi` limit | |
 | `webhookApi.service.port` | `8080` | |
-| `webhookApi.ingress.*` | disabled | Same shape as `operator.ingress`. |
+| `webhookApi.ingress.*` | disabled | Same shape as `operator.ingress`, including `allowInsecure` (same fail-closed TLS check applies — this service also carries bearer tokens and webhook payloads). |
 
 ### `controller` — Kopf reconciler + cron scheduler
 
@@ -146,6 +149,7 @@ Always-on (not optional like `webhookApi`), always exactly one instance — no `
 | Key | Default | Description |
 |---|---|---|
 | `controller.image` | `k8secops/k8secops:gitops-operator-1.0.0` | |
+| `controller.imageDigest` | `""` | Same digest-pinning mechanism as `operator.imageDigest`. |
 | `controller.resources` | `50m/128Mi` request, `300m/384Mi` limit | |
 
 ### `ui` — login and exposure
@@ -160,7 +164,7 @@ Always-on (not optional like `webhookApi`), always exactly one instance — no `
 
 ### `oidc` — optional SSO
 
-Adds a "Sign in with SSO" option; doesn't remove username/password login or the API token.
+Adds a "Sign in with SSO" option; doesn't remove username/password login or the API token. **Also applies to webhook-api's bearer-token REST API**, not just the browser UI — any request bearing a validly-signed OIDC token for the configured issuer/audience is accepted wherever a bearer token is accepted, at whatever authority `adminGroups` below grants it.
 
 | Key | Default | Description |
 |---|---|---|
@@ -168,6 +172,8 @@ Adds a "Sign in with SSO" option; doesn't remove username/password login or the 
 | `oidc.issuer` | `""` | As reachable from the **browser**. |
 | `oidc.audience` | `""` | Expected `aud`/`azp` claim. |
 | `oidc.jwksUrl` | `""` | Override only if `issuer` isn't reachable from the operator pod itself (in-cluster). |
+| `oidc.groupsClaim` | `groups` | Name of the claim (a list of strings) your IdP puts group/role membership in. |
+| `oidc.adminGroups` | `[]` | List of group names from `groupsClaim` that grant **full operator-token-equivalent authority** on webhook-api's REST API (application create/update/delete, webhook-secret reveal, pipeline approve/reject, build-cache clear, connection tests) — platform-wide, no per-app scoping yet. With this left empty (the default), every OIDC-authenticated caller is read-only on that API regardless of what groups their token carries: they can poll run/pipeline status but cannot mutate anything. Only add a group here once you're sure every member of it should have that authority. |
 
 ### `tekton`
 
@@ -175,7 +181,9 @@ Adds a "Sign in with SSO" option; doesn't remove username/password login or the 
 |---|---|---|
 | `tekton.enabled` | `true` | Set `false` if Tekton is shared with other workloads and should survive `helm uninstall`. |
 | `tekton.version` | `v1.13.0` | |
+| `tekton.releaseSha256` | pinned to the current version | sha256 of that exact version's `release.yaml` from `tektoncd/pipeline`'s GitHub release. The pre-install Job downloads and verifies this **before** applying the manifest with its cluster-admin-equivalent bootstrap `ClusterRole` — it fails closed (refuses to apply anything) if this is blank or doesn't match. **You must update this value yourself if you bump `tekton.version`** — get the new one with `curl -sL <release.yaml URL> | sha256sum`. |
 | `tekton.kubectlImage` | `k8secops/k8secops:kubectl-1.29` | Used by the install/uninstall hook Jobs. |
+| `tekton.kubectlImageDigest` | `""` | Same digest-pinning mechanism as `operator.imageDigest`. |
 | `tekton.removeOnUninstall` | `true` | |
 
 ### `cache` / `registryMirror` — pipeline performance
@@ -193,6 +201,7 @@ Adds a "Sign in with SSO" option; doesn't remove username/password login or the 
 | `pruner.schedule` | `*/5 * * * *` | |
 | `pruner.retentionMinutes` | `15` | Deletes completed `PipelineRun`/`TaskRun`/pod objects older than this. Run history itself lives independently in PostgreSQL and is unaffected. |
 | `pruner.image` | `k8secops/k8secops:python-3.12-slim` | |
+| `pruner.imageDigest` | `""` | Same digest-pinning mechanism as `operator.imageDigest`. |
 
 ### `ephemeralNamespaceSweep` — stuck-namespace backstop
 
@@ -208,6 +217,7 @@ Adds a "Sign in with SSO" option; doesn't remove username/password login or the 
 |---|---|---|
 | `sonarqube.enabled` | `true` | |
 | `sonarqube.image` | `sonarqube:lts-community` | |
+| `sonarqube.imageDigest` | `""` | Same digest-pinning mechanism as `operator.imageDigest`. |
 | `sonarqube.postgresql.enabled` | `true` | Persists SonarQube data across restarts using the shared PostgreSQL instance. `false` = embedded H2 + emptyDir, data lost on every restart. |
 | `sonarqube.postgresql.database` | `sonarqube` | |
 | `sonarqube.postgresql.dataSize` | `2Gi` | File-store PVC (plugins/temp/extensions) — separate from the relational data. |
@@ -240,6 +250,7 @@ Adds a "Sign in with SSO" option; doesn't remove username/password login or the 
 |---|---|---|
 | `database.mode` | `internal` | `internal` = platform installs PostgreSQL in `gitops-db`. `external` = you supply connection details. |
 | `database.internal.image` | `postgres:16` | `postgres:16-alpine` also supported (smaller, non-standard UID — the init container handles either). |
+| `database.internal.imageDigest` | `""` | Same digest-pinning mechanism as `operator.imageDigest`. |
 | `database.internal.storage.{data,wal,backup}` | `10Gi` / `5Gi` / `10Gi` | |
 | `database.internal.storageClass` | `""` | Empty = cluster default. |
 | `database.internal.maxConnections` | `200` | Raise for `operator.replicas > 1` and/or `webhookApi.enabled`. |
@@ -287,6 +298,17 @@ Single source of truth for every namespace name the platform uses — changing t
 | Key | Default | Description |
 |---|---|---|
 | `imageRepo` | `k8secops/k8secops` | Where all scanner/base/runtime images are pulled from. Override after mirroring images to a private registry (`make mirror-images REGISTRY=...`). |
+
+### `images` — shared infrastructure images
+
+Images referenced by more than one template (the Tekton bootstrap Job, SonarQube's init container, the cache-server Deployments) — not per-app scanner tools, which live under `toolVersions` instead.
+
+| Key | Default | Description |
+|---|---|---|
+| `images.busybox` | `busybox:1.36` | Used by the Tekton pre-install Job and SonarQube's `sysctl` init container. |
+| `images.busyboxDigest` | `""` | Digest-pinning override for `images.busybox`, same mechanism as `operator.imageDigest`. |
+| `images.nginx` | `nginx:1.27-alpine` | Used by `vulnDbCacheServer` and `packageCacheServer`. |
+| `images.nginxDigest` | `""` | Digest-pinning override for `images.nginx`. |
 
 ### `vulnDbCacheServer` — shared vulnerability-DB cache
 
@@ -389,5 +411,7 @@ helm upgrade gitops-platform oci://registry-1.docker.io/k8secops/gitops-platform
   --set operator.ingress.tls.enabled=true \
   --set operator.ingress.tls.secretName=gitops-tls
 ```
+
+The `tls.enabled=true`/`tls.secretName` lines above are not just best practice — the chart's install/upgrade validation now **fails closed** if `operator.ingress`/`webhookApi.ingress` is enabled with a `host` but no `tls.enabled=true` (see `allowInsecure` in the reference tables above for the escape hatch if TLS is genuinely terminated upstream of this Ingress instead).
 
 See the main platform documentation's Ingress/SSL section for required annotations (SSE buffering must stay off for nginx-ingress) and Traefik/Istio-specific notes.
