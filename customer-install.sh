@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# GitOps Platform — one-command installer
+# k8secops-gate — one-command installer
 #
 # Usage (no source repo required):
 #   curl -sfL https://raw.githubusercontent.com/k8secops/k8secops-script/main/customer-install.sh | bash
@@ -10,7 +10,7 @@
 #   2. Creates platform namespaces + sets Pod Security labels
 #   3. Installs Tekton Pipelines (idempotent -- skips if already present)
 #   4. Installs Sealed Secrets controller
-#   5. Installs the GitOps Platform Helm chart from OCI
+#   5. Installs the k8secops-gate Helm chart from OCI
 #   6. Applies all 30+ security scanner tasks
 #   7. Waits until every pod is Running and Ready
 #
@@ -77,7 +77,7 @@ CLUSTER_CTX=$(kubectl config current-context)
 info "Cluster : ${CLUSTER_CTX}"
 info "Chart   : ${CHART_OCI}:${CHART_VERSION}"
 echo ""
-read -rp "  Install GitOps Platform on '${CLUSTER_CTX}'? [y/N]: " _confirm
+read -rp "  Install k8secops-gate on '${CLUSTER_CTX}'? [y/N]: " _confirm
 [[ "${_confirm,,}" == "y" ]] || { echo "Aborted."; exit 0; }
 
 # ── Setup — collect all inputs before touching the cluster ────────────────────
@@ -282,7 +282,7 @@ info "Sealed Secrets installed"
 
 # ── Step 4: Helm install from OCI ─────────────────────────────────────────────
 # tekton.enabled=false: Tekton is already installed above — skip the hook.
-section "Step 4 — Installing GitOps Platform v${CHART_VERSION} from OCI"
+section "Step 4 — Installing k8secops-gate v${CHART_VERSION} from OCI"
 
 # rbacHardening installs a ValidatingAdmissionPolicy closing a defense-in-
 # depth gap around the operator/webhook-api ClusterRole (see values.yaml's
@@ -472,7 +472,7 @@ section "Done"
 echo ""
 echo ""
 echo "  ┌──────────────────────────────────────────────────────┐"
-echo "  │         GitOps Platform is ready!                    │"
+echo "  │         k8secops-gate is ready!                      │"
 echo "  └──────────────────────────────────────────────────────┘"
 echo ""
 echo "  ── Access ──────────────────────────────────────────────"

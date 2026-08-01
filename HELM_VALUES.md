@@ -1,6 +1,6 @@
 # Helm Install & Configuration Reference
 
-Complete reference for installing and configuring the GitOps Platform via Helm. If you used the one-command installer (`customer-install.sh` / `install.sh`), most of the values below were already set for you — see [What the installer already sets](#what-the-installer-already-sets). This document is for anyone who wants a manual `helm install`, needs to change a setting after install, or wants to understand exactly what a value does before overriding it.
+Complete reference for installing and configuring k8secops-gate via Helm. If you used the one-command installer (`customer-install.sh` / `install.sh`), most of the values below were already set for you — see [What the installer already sets](#what-the-installer-already-sets). This document is for anyone who wants a manual `helm install`, needs to change a setting after install, or wants to understand exactly what a value does before overriding it.
 
 The canonical source for every value is `helm/gitops-platform/values.yaml` in the platform's own source repo — this document mirrors it section-by-section, in sync as of chart version **1.0.0**.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# GitOps Platform — uninstaller
+# k8secops-gate — uninstaller
 #
 # Usage:
 #   curl -sfL https://raw.githubusercontent.com/k8secops/k8secops-script/main/customer-uninstall.sh | bash
@@ -200,7 +200,7 @@ fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 section "Done"
-info "GitOps Platform uninstalled from '$(kubectl config current-context)'."
+info "k8secops-gate uninstalled from '$(kubectl config current-context)'."
 echo ""
 
 if [[ "$PURGE" == "false" ]]; then

@@ -1,4 +1,4 @@
-# GitOps Platform
+# k8secops-gate
 
 A cloud-agnostic, Kubernetes-native CI system with 30+ security scanners, AI-powered risk grading (A–F), and a mandatory human approval gate before any image reaches your registry.
 
@@ -86,7 +86,7 @@ Want full control instead of the one-command installer — or need to change a s
 | 1 | Creates namespaces (`gitops-core`, `gitops-tooling`, `gitops-db`, `tekton-pipelines`) |
 | 2 | Installs Tekton Pipelines v1.13.0 |
 | 3 | Installs Sealed Secrets controller |
-| 4 | Installs the GitOps Platform Helm chart from Docker Hub OCI |
+| 4 | Installs the k8secops-gate Helm chart from Docker Hub OCI |
 | 5 | Applies 30+ security scanner Tekton tasks |
 | 6 | Waits until every pod is Running and Ready (in dependency order) |
 | Done | Prints all credentials and access instructions |
@@ -110,7 +110,7 @@ At the end of the install the script prints everything you need:
 ```
 ── Done ──
 ┌──────────────────────────────────────────────────────┐
-│         GitOps Platform is ready!                    │
+│         k8secops-gate is ready!                      │
 └──────────────────────────────────────────────────────┘
 
   ── Access ──────────────────────────────────────────────
@@ -290,4 +290,4 @@ All scanner images are hosted on Docker Hub under `k8secops/k8secops`:
 
 ---
 
-*GitOps Platform v1.0.0 · [hub.docker.com/r/k8secops/k8secops](https://hub.docker.com/r/k8secops/k8secops)*
+*k8secops-gate v1.0.0 · [hub.docker.com/r/k8secops/k8secops](https://hub.docker.com/r/k8secops/k8secops)*
