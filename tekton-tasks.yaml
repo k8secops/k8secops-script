@@ -476,6 +476,142 @@ spec:
         echo "Checkov findings: $COUNT  ($SIZE)"
         echo "Report: iac/$(params.output-name).sarif"
 
+# Source: platform/tekton/tasks/sast/cppcheck-task.yaml
+---
+# "" cppcheck (C/C++) """""""""""""""""""""""""""""""""""""""
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-sast-cppcheck
+  namespace: gitops-core
+  labels:
+    gitops-platform.io/stage: sast
+    gitops-platform.io/language: cpp
+spec:
+  description: >
+    cppcheck static analysis. Unlike every other SAST tool in this platform
+    (installed at runtime via the language's own package manager, or a
+    vendor-published image re-tagged verbatim), cppcheck has neither -- no
+    official Docker image to re-tag, and no non-root install mechanism the
+    way `go install`/`cargo install --locked`/`pip install --user` give
+    gosec/cargo-audit/bandit. Its image (docker/cppcheck/Dockerfile) is
+    built from source once and pushed manually, the same as
+    docker/builder/Dockerfile (the Kaniko-executor image) -- see that
+    Dockerfile's own header comment for the full rationale.
+  workspaces:
+    - name: source
+    - name: results
+  results:
+    - name: FINDING_COUNT
+  steps:
+    - name: cppcheck
+      image: k8secops/k8secops:cppcheck-2.14.2
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        mkdir -p $(workspaces.results.path)/sast
+        cppcheck \
+          --enable=warning,style,performance,portability \
+          --suppress=missingIncludeSystem \
+          --inline-suppr \
+          --xml --xml-version=2 \
+          --output-file=$(workspaces.results.path)/sast/cppcheck.xml \
+          . || true
+        echo "Report: sast/cppcheck.xml"
+
+    # cppcheck has no built-in SARIF export (unlike gosec/bandit, `-f sarif`).
+    # Converts to SARIF here instead of teaching analyze-sast.py a fourth
+    # bespoke parser (spotbugs.xml/eslint.json/roslyn.txt already exist) --
+    # this way cppcheck's findings are picked up by the existing generic
+    # `sast_dir.glob("*.sarif")` loop with zero changes to that script.
+    - name: convert-to-sarif
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/usr/bin/env python3
+        import json
+        import xml.etree.ElementTree as ET
+
+        xml_path = "$(workspaces.results.path)/sast/cppcheck.xml"
+        sarif_path = "$(workspaces.results.path)/sast/cppcheck.sarif"
+        count_path = "$(results.FINDING_COUNT.path)"
+
+        # "information"-severity entries are cppcheck telling you about its
+        # own analysis (e.g. "limiting analysis of branches"), not a finding
+        # about the scanned code -- excluded from both the SARIF export and
+        # the finding count, same as gosec/bandit only counting real issues.
+        SEVERITY_TO_LEVEL = {
+            "error": "error",
+            "warning": "warning",
+            "style": "note",
+            "performance": "note",
+            "portability": "note",
+        }
+
+        rules = {}
+        results = []
+        try:
+            root = ET.parse(xml_path).getroot()
+            for error in root.findall(".//errors/error"):
+                severity = error.get("severity", "style")
+                level = SEVERITY_TO_LEVEL.get(severity)
+                if level is None:
+                    continue  # "information" or an unrecognized future severity
+
+                rule_id = error.get("id", "cppcheck")
+                message = error.get("verbose") or error.get("msg", rule_id)
+                rules.setdefault(rule_id, {"id": rule_id,
+                                            "shortDescription": {"text": message[:200]}})
+
+                locations = error.findall("location")
+                file_uri = error.get("file0", "?")
+                line = 0
+                if locations:
+                    file_uri = locations[0].get("file", file_uri)
+                    line = int(locations[0].get("line", "0") or "0")
+
+                results.append({
+                    "ruleId": rule_id,
+                    "level": level,
+                    "message": {"text": error.get("msg", rule_id)},
+                    "locations": [{"physicalLocation": {
+                        "artifactLocation": {"uri": file_uri},
+                        "region": {"startLine": line} if line else {},
+                    }}],
+                })
+        except Exception as e:
+            print(f"cppcheck XML parse: {e}")
+
+        sarif = {
+            "version": "2.1.0",
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "runs": [{
+                "tool": {"driver": {"name": "cppcheck", "rules": list(rules.values())}},
+                "results": results,
+            }],
+        }
+        with open(sarif_path, "w") as f:
+            json.dump(sarif, f)
+        with open(count_path, "w") as f:
+            f.write(str(len(results)))
+        print(f"cppcheck: {len(results)} findings")
+        print(f"Report: sast/cppcheck.sarif")
+
 # Source: platform/tekton/tasks/sast/eslint-security-task.yaml
 ---
 # "" ESLint Security (Node.js) """""""""""""""""""""""""""""
@@ -1673,6 +1809,241 @@ spec:
         echo "OSV-Scanner: $COUNT vulnerabilities"
         SIZE=$(du -sh $(workspaces.results.path)/sca/osv.json 2>/dev/null | cut -f1 || echo "0B")
         echo "Report: sca/osv.json  ($SIZE, $COUNT vulns)  |  sca/osv.sarif"
+
+# Source: platform/tekton/tasks/tests/test-cpp-task.yaml
+---
+# "" C/C++ Unit Tests """"""""""""""""""""""""""""""""""""""
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-test-cpp
+  namespace: gitops-core
+  labels:
+    gitops-platform.io/stage: unit-tests
+    gitops-platform.io/language: cpp
+spec:
+  description: >
+    Runs `make test` and collects real gcov coverage -- unlike Rust
+    (cargo-tarpaulin/grcov need ptrace or nightly instrumentation, unreliable
+    under this platform's restricted-PSA test pods), GCC's own
+    --coverage/gcov needs neither, so C/C++ genuinely gets a measured
+    coverage percentage instead of the "not measured" fallback Rust reports.
+  params:
+    - name: build-version
+      default: "13"
+    - name: build-context
+      default: "."
+    - name: build-file
+      default: "Makefile"
+    - name: coverage-threshold
+      default: "80"
+    - name: pipeline-run-id
+      type: string
+    - name: operator-api-url
+      type: string
+      default: "http://gitops-operator.gitops-core.svc.cluster.local:8080"
+  workspaces:
+    - name: source
+    - name: results
+    - name: extra-test-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} for this app's declared test-env-var credentials. Absent for apps with none."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared external-service credentials, shared with the compile task. Absent for apps with none."
+  results:
+    - name: TESTS_PASSED
+    - name: TESTS_FAILED
+    - name: COVERAGE_PCT
+    - name: TESTS_EXECUTED
+      description: "'true' if the test runner actually produced a report, 'false' if it never ran (broken build, missing test target, etc.) -- distinguishes that from a genuine zero-test project."
+  steps:
+    - name: export-extra-env
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      script: |
+        #!/bin/sh
+        ENVFILE="$(workspaces.results.path)/.extra-env"
+        : > "$ENVFILE"
+        if [ "$(workspaces.extra-test-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-test-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+        if [ "$(workspaces.extra-service-creds.bound)" = "true" ]; then
+          for f in "$(workspaces.extra-service-creds.path)"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in
+              FILE__*) echo "export ${base#FILE__}_FILE='$f'" >> "$ENVFILE" ;;
+              *)       echo "export $base=\"\$(cat '$f')\"" >> "$ENVFILE" ;;
+            esac
+          done
+        fi
+
+    - name: test
+      image: k8secops/k8secops:gcc-$(params.build-version)
+      workingDir: $(workspaces.source.path)/$(params.build-context)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.results.path)/.cpp-home"
+      script: |
+        #!/bin/bash
+        set -e
+        [ -f "$(workspaces.results.path)/.extra-env" ] && . "$(workspaces.results.path)/.extra-env"
+        mkdir -p "$HOME"
+        mkdir -p $(workspaces.results.path)/tests
+
+        # Same repo-root-relative -> build-context-relative fix as
+        # compile-cpp-task.yaml.
+        BUILD_FILE="$(params.build-file)"
+        BUILD_CONTEXT="$(params.build-context)"
+        case "$BUILD_CONTEXT" in
+          .|"") : ;;
+          *) BUILD_FILE="${BUILD_FILE#"$BUILD_CONTEXT"/}" ;;
+        esac
+
+        MAKE_ARGS=""
+        case "$BUILD_FILE" in
+          Makefile|"") : ;;
+          *) MAKE_ARGS="-f $BUILD_FILE" ;;
+        esac
+
+        make $MAKE_ARGS test 2>&1 | tee $(workspaces.results.path)/tests/output.txt || true
+
+        # C/C++ has no built-in JUnit output and no single dominant test
+        # framework convention -- parse pass/fail counts from the project's
+        # own "test result: ok. N passed; M failed" summary line, the exact
+        # same convention (and grep/awk logic) as test-rust-task.yaml, which
+        # this platform's own testapps/cpp-app fixture deliberately mirrors
+        # in its hand-rolled test runner so both languages share one parser
+        # shape.
+        PASSED=$(grep -oE 'test result: [a-zA-Z]+\. [0-9]+ passed' $(workspaces.results.path)/tests/output.txt \
+                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                   | awk '{s+=$1} END {print s+0}')
+        FAILED=$(grep -oE '[0-9]+ failed' $(workspaces.results.path)/tests/output.txt \
+                   | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')
+
+        if grep -q 'test result:' $(workspaces.results.path)/tests/output.txt 2>/dev/null; then
+          EXECUTED=true
+        else
+          EXECUTED=false
+        fi
+
+        # Real gcov coverage -- find every .gcno the coverage-instrumented
+        # `make test` produced (wherever the project's own Makefile placed
+        # them, no assumption about layout) and run gcov in that same
+        # directory so it can find the matching .gcda. Output is plain text,
+        # parsed below without needing python3 (not present in the gcc
+        # image) or gawk's array-capturing match() (Debian's default awk is
+        # mawk, which doesn't support it) -- split()/substr() only, portable
+        # across any awk.
+        : > $(workspaces.results.path)/tests/coverage-raw.txt
+        while IFS= read -r gcno; do
+          dir=$(dirname "$gcno")
+          base=$(basename "$gcno")
+          ( cd "$dir" && gcov -o . "$base" ) >> $(workspaces.results.path)/tests/coverage-raw.txt 2>&1 || true
+        done < <(find . -name "*.gcno" 2>/dev/null)
+
+        # Only count coverage of the project's own source under src/ --
+        # gcov also reports on every transitively-included system/STL
+        # header by default, which would otherwise dominate the number with
+        # unrelated libstdc++ template-instantiation coverage.
+        COVERAGE=$(grep -A1 "^File '" $(workspaces.results.path)/tests/coverage-raw.txt 2>/dev/null | grep -v '^--$' | awk '
+          BEGIN { sum_total = 0; sum_covered = 0 }
+          NR % 2 == 1 { file = $0; next }
+          NR % 2 == 0 {
+            if (file ~ /^File .src\//) {
+              s = $0
+              sub(/^Lines executed:/, "", s)
+              n = split(s, parts, "% of ")
+              if (n == 2) {
+                pct = parts[1] + 0
+                total = parts[2] + 0
+                sum_total += total
+                sum_covered += (pct / 100 * total)
+              }
+            }
+          }
+          END {
+            if (sum_total > 0) printf "%.1f", (sum_covered / sum_total) * 100
+            else printf "0.0"
+          }')
+        COVERAGE="${COVERAGE:-0.0}"
+
+        echo -n "$PASSED" > $(results.TESTS_PASSED.path)
+        echo -n "$FAILED" > $(results.TESTS_FAILED.path)
+        echo -n "$COVERAGE" > $(results.COVERAGE_PCT.path)
+        echo -n "$EXECUTED" > $(results.TESTS_EXECUTED.path)
+        echo "C/C++ tests: $PASSED passed, $FAILED failed, coverage $COVERAGE% (src/ only), executed=$EXECUTED"
+
+    - name: check-and-notify
+      image: k8secops/k8secops:python-3.12-slim
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: OPERATOR_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gitops-operator-token
+              key: operatorApiToken
+      script: |
+        #!/usr/bin/env python3
+        import json, urllib.request, os
+        passed    = int(open("$(results.TESTS_PASSED.path)").read().strip() or "0")
+        failed    = int(open("$(results.TESTS_FAILED.path)").read().strip() or "0")
+        coverage  = float(open("$(results.COVERAGE_PCT.path)").read().strip() or "0")
+        executed  = open("$(results.TESTS_EXECUTED.path)").read().strip() == "true"
+        threshold = int("$(params.coverage-threshold)")
+        payload = json.dumps({"runId": "$(params.pipeline-run-id)", "coveragePct": coverage,
+            "threshold": threshold, "passed": executed and failed == 0 and coverage >= threshold,
+            "testsPassed": passed, "testsFailed": failed, "testsExecuted": executed}).encode()
+        token = os.environ.get("OPERATOR_API_TOKEN", "")
+        headers = {"Content-Type": "application/json"}
+        if token: headers["Authorization"] = f"Bearer {token}"
+        try:
+            urllib.request.urlopen(urllib.request.Request(
+                "$(params.operator-api-url)/api/v1/pipelines/$(params.pipeline-run-id)/coverage",
+                data=payload, headers=headers, method="POST"), timeout=10)
+        except Exception as e:
+            print(f"Coverage notify failed (non-fatal): {e}")
+        # Never fail the Tekton task/pipeline on test results -- the human
+        # gate is where a developer/reviewer decides what to do with failures.
+        if not executed:
+            print("WARNING: 'make test' did not produce a result -- treat as unverified, not as a clean 0-test result. Check the test step's logs above.")
+        elif failed > 0:
+            print(f"NOTE: {failed} test(s) failed -- proceeding; visible at the human gate for review")
+        elif coverage < threshold:
+            print(f"NOTE: coverage {coverage}% below threshold {threshold}% -- proceeding; visible at the human gate for review")
+        else:
+            print(f"PASS: {passed} tests, coverage {coverage}% >= {threshold}%")
 
 # Source: platform/tekton/tasks/tests/test-dotnet-task.yaml
 ---
@@ -3473,6 +3844,18 @@ spec:
         # Dockerfile an app supplies, both of which commonly do `COPY . .`.
         # .gopath/.nuget hold downloaded dependency caches, not credentials
         # directly, but never belong in a shipped image either.
+        #
+        # /var/spool/mail is a different kind of --ignore-path use: several
+        # RHEL/UBI-based images (confirmed: icr.io/appcafe/open-liberty's
+        # *-ubi tags) ship a symlink there that trips a long-standing Kaniko
+        # bug during its base-image rootfs unpack ("too many levels of
+        # symbolic links") whenever a later instruction (a COPY that might
+        # overwrite existing base-image content, or a RUN) forces Kaniko to
+        # fully materialize the base filesystem -- nothing to do with the
+        # building app's own Dockerfile content. No real Dockerfile in this
+        # fleet ever needs to reference a mail spool, so skipping it from
+        # Kaniko's filesystem walk is safe unconditionally, not just for
+        # this one base image.
         # shellcheck disable=SC2086
         /kaniko/executor \
           --dockerfile="$(workspaces.source.path)/$DF" \
@@ -3492,6 +3875,7 @@ spec:
           --ignore-path="$(workspaces.source.path)/.precompile-home" \
           --ignore-path="$(workspaces.source.path)/.gopath" \
           --ignore-path="$(workspaces.source.path)/.nuget" \
+          --ignore-path="/var/spool/mail" \
           $MIRROR_FLAG
 
         echo "Image saved: $(workspaces.image-tar.path)/image.tar"
@@ -3539,6 +3923,157 @@ spec:
         except Exception as e:
             print(f"Operator notify failed (non-fatal): {e}")
 
+
+# Source: platform/tekton/tasks/build/compile-cpp-task.yaml
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-compile-cpp
+  namespace: gitops-core
+  labels:
+    gitops-platform.io/stage: compile
+spec:
+  description: >
+    C/C++ compile -- plain `make` (default target). Validates compilation
+    before image build. Unlike every other language, C/C++ has no private-
+    package-registry-credential convention (no BUILD_TOOL_LANGUAGES entry) --
+    a Makefile/GCC project has no package manager to authenticate against,
+    so this task's materialize-build-creds step only handles the generic
+    secret-manager/external-service passthrough every language gets, not a
+    per-registry credential file.
+  params:
+    - name: build-tool
+      default: "make"
+    - name: build-version
+      default: "13"
+    - name: build-file
+      default: "Makefile"
+    - name: build-context
+      default: "."
+    - name: extra-creds-manifest
+      default: "[]"
+      description: "Always empty for cpp today (no BUILD_TOOL_LANGUAGES entry) -- declared for shape-consistency with every other language's compile task, not currently populated by pipeline_builder.py."
+  workspaces:
+    - name: source
+    - name: extra-build-creds
+      optional: true
+      description: "Never bound for cpp today -- no BUILD_TOOL_LANGUAGES entry means build_creds is always empty in pipeline_builder.py. Declared for shape-consistency only."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both (plus legacy external-service rows), available at both compile and test time. Absent for apps with none."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=build (compile-only, never visible to the test stage). Absent for apps with none."
+  steps:
+    # Generic passthrough only -- see the task description above for why
+    # there's no per-registry credential-file-writing logic here, unlike
+    # every other language's own materialize-build-creds step.
+    - name: materialize-build-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/usr/bin/env python3
+        import pathlib
+
+        home = pathlib.Path("$(workspaces.source.path)/.compile-home")
+        home.mkdir(parents=True, exist_ok=True)
+
+        svc_lines: list[str] = []
+        for raw_ws_path in ("$(workspaces.extra-service-creds.path)",
+                             "$(workspaces.extra-generic-build-creds.path)"):
+            if not raw_ws_path:
+                continue
+            svc_dir = pathlib.Path(raw_ws_path)
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".extra-service-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} secret-manager credential env var(s)")
+        else:
+            print("No extra service credentials declared -- skipping")
+
+    - name: compile
+      image: k8secops/k8secops:gcc-$(params.build-version)
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)/$(params.build-context)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "1000m", memory: "1Gi"}
+        limits:   {cpu: "4000m", memory: "4Gi"}
+      env:
+        - name: HOME
+          value: "$(workspaces.source.path)/.compile-home"
+      script: |
+        #!/bin/bash
+        set -e
+        echo """ C/C++ compile: gcc version=$(params.build-version) """
+
+        [ -f "$HOME/.extra-service-creds.env" ] && . "$HOME/.extra-service-creds.env"
+
+        # Trust a customer's private artifact-repo CA, if declared (secret-manager
+        # credential named CUSTOM_CA_CERT, Stage=Build, Secure file). Only
+        # meaningful if a Makefile shells out to curl/wget to fetch a prebuilt
+        # dependency -- plain GCC/make itself makes no network calls.
+        if [ -n "$CUSTOM_CA_CERT_FILE" ]; then
+          export SSL_CERT_FILE="$CUSTOM_CA_CERT_FILE"
+          export CURL_CA_BUNDLE="$CUSTOM_CA_CERT_FILE"
+          echo "Trusting custom CA: $CUSTOM_CA_CERT_FILE"
+        fi
+
+        gcc --version | head -1
+
+        # BUILD_FILE from ai-preflight is always repo-root-relative, but
+        # workingDir here is already source/$BUILD_CONTEXT -- strip a leading
+        # build-context/ prefix to avoid double-joining for monorepo apps
+        # (same fix as compile-rust-task.yaml/compile-go-task.yaml).
+        BUILD_FILE="$(params.build-file)"
+        BUILD_CONTEXT="$(params.build-context)"
+        case "$BUILD_CONTEXT" in
+          .|"") : ;;
+          *) BUILD_FILE="${BUILD_FILE#"$BUILD_CONTEXT"/}" ;;
+        esac
+
+        # `make` (default target, no target argument) -- same "runs the
+        # project's own default entry point" convention as Ant, since C/C++
+        # projects have no standardized build lifecycle the way Maven/Gradle
+        # do. -f only passed when build-file isn't the conventional
+        # "Makefile" name make already looks for on its own.
+        MAKE_ARGS=""
+        case "$BUILD_FILE" in
+          Makefile|"") : ;;
+          *) MAKE_ARGS="-f $BUILD_FILE" ;;
+        esac
+        make $MAKE_ARGS
+
+        echo """ C/C++ compile complete -- binaries: """
+        ls -la ./bin/ 2>/dev/null || echo "(no ./bin directory produced -- check the project's Makefile places its output there)"
 
 # Source: platform/tekton/tasks/build/compile-dotnet-task.yaml
 ---
@@ -5305,6 +5840,92 @@ spec:
         esac
         echo """ TypeScript compile complete """
 
+# Source: platform/tekton/tasks/build/dockerfile-check-task.yaml
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-dockerfile-check
+  namespace: gitops-core
+  labels:
+    gitops-platform.io/stage: build
+spec:
+  description: |
+    Fail-fast gate: runs immediately after ai-preflight, before compile/tests.
+    Checks only whether the Dockerfile situation is *structurally recoverable*
+    (the file exists at the ai-preflight-corrected path, or pre-build will
+    generate a default for this language) -- it does not validate COPY
+    sources (those don't exist until compile has run) and it does not
+    generate the default Dockerfile itself; gitops-pre-build (after compile)
+    remains the one place that actually happens, unchanged. The only thing
+    this task buys is failing within seconds of clone instead of after a
+    full compile+test cycle, for a repo whose Dockerfile is missing/ambiguous
+    (common in monorepos with multiple sibling apps) with no way to recover.
+    gitops-precompile and compile both runAfter this task -- see
+    pipeline_builder.py.
+  params:
+    - name: language
+      default: "java"
+    - name: dockerfile-path
+      default: "./Dockerfile"
+  workspaces:
+    - name: source
+      readOnly: true
+    - name: ai-results
+      description: "Read-only -- surfaces ai-preflight's own note (e.g. an
+        ambiguous Dockerfile in a monorepo) in this task's failure message
+        instead of a bare 'not found'."
+  steps:
+    - name: check
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      workingDir: $(workspaces.source.path)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "50m", memory: "64Mi"}
+        limits:   {cpu: "200m", memory: "128Mi"}
+      script: |
+        #!/usr/bin/env python3
+        import json, pathlib, sys
+
+        source_dir = pathlib.Path("$(workspaces.source.path)")
+        df_rel     = "$(params.dockerfile-path)".lstrip("./")
+        df_path    = source_dir / df_rel if df_rel else source_dir / "Dockerfile"
+        language   = "$(params.language)"
+
+        # Mirrors gitops-pre-build's own DEFAULT_DOCKERFILES key set (see
+        # pre-build-task.yaml) -- kept as a plain language list here rather
+        # than duplicating the full templates, since this task only needs to
+        # know whether pre-build *will* generate one later, not generate it
+        # itself. Update both places together if that set ever changes.
+        LANGUAGES_WITH_DEFAULT = {"python", "nodejs", "react", "nextjs", "go", "dotnet"}
+
+        if df_path.exists() or language in LANGUAGES_WITH_DEFAULT:
+            print(f"Dockerfile check OK ({df_path} "
+                  f"{'exists' if df_path.exists() else f'missing but {language} has a default'})")
+            sys.exit(0)
+
+        print(f"ERROR: Dockerfile not found at {df_path}, and {language} has no default "
+              f"Dockerfile fallback -- failing now rather than after compile/tests.")
+        try:
+            data = json.loads((pathlib.Path("$(workspaces.ai-results.path)") / "preflight.json").read_text())
+            note = data.get("note", "") if data.get("flagged") else ""
+        except Exception:
+            note = ""
+        if note:
+            print(f"  ai-preflight's diagnosis (from right after clone): {note}")
+        print(f"  FIX: set 'Dockerfile path' in Edit App to the real path, relative to repo "
+              f"root (not build context) -- e.g. for a monorepo, "
+              f"'<app-subdirectory>/Dockerfile'.")
+        sys.exit(1)
+
 # Source: platform/tekton/tasks/build/hadolint-task.yaml
 ---
 # Hadolint -- Dockerfile lint -- own pod, onError:continue in the pipeline.
@@ -5927,6 +6548,12 @@ spec:
       default: "."
   workspaces:
     - name: source
+    - name: ai-results
+      description: "Shared with ai-preflight/ai-aggregate. Read-only here --
+        used only to enrich the validate-dockerfile step's error message with
+        whatever ai-preflight already diagnosed (e.g. an ambiguous Dockerfile
+        in a monorepo), never to change what gets validated."
+      optional: true
   steps:
     - name: verify-artifacts
       image: k8secops/k8secops:python-3.12-slim
@@ -5985,16 +6612,24 @@ spec:
                 sys.exit(1)
             print(f"-- {what} ready for Kaniko: {path.relative_to(source_dir)} --")
 
-        if build_tool in ("maven", "gradle"):
-            jars = [p for p in source_dir.rglob("*.jar")
-                    if ".m2" not in str(p) and "test-classes" not in str(p)
-                    and "original-" not in p.name]
-            if not jars:
-                print("ERROR: No JAR found -- compile stage may have failed.")
+        if build_tool in ("maven", "gradle", "ant"):
+            # WAR/EAR, not just JAR -- a Jakarta/Java EE webapp (WebSphere
+            # Liberty, Open Liberty, Tomcat, ...) packages as one of these
+            # instead, and `mvn package`/`gradlew assemble` already produce
+            # them correctly (compile-maven.sh/compile-gradle.sh's own
+            # "Artifacts" listing already searched for all three) -- this
+            # check was the one place still assuming every Java app is a
+            # runnable JAR.
+            artifacts = [p for p in source_dir.rglob("*")
+                         if p.suffix in (".jar", ".war", ".ear")
+                         and ".m2" not in str(p) and "test-classes" not in str(p)
+                         and "original-" not in p.name]
+            if not artifacts:
+                print("ERROR: No JAR/WAR/EAR found -- compile stage may have failed.")
                 sys.exit(1)
             print("-- Build artifacts ready for Kaniko: --")
-            for j in sorted(jars):
-                print(f"  {j.stat().st_size // 1024} KB  {j.relative_to(source_dir)}")
+            for a in sorted(artifacts):
+                print(f"  {a.stat().st_size // 1024} KB  {a.relative_to(source_dir)}")
         elif build_tool in ("npm", "yarn", "pnpm"):
             require(context_dir / "node_modules", "node_modules/",
                      "Dockerfile should COPY node_modules instead of running npm/yarn/pnpm install.")
@@ -6031,11 +6666,38 @@ spec:
           type: RuntimeDefault
       script: |
         #!/usr/bin/env python3
-        import re, pathlib, sys
+        import json, re, pathlib, sys
 
         source_dir = pathlib.Path("$(workspaces.source.path)")
         df_rel     = "$(params.dockerfile-path)".lstrip("./")
         df_path    = source_dir / df_rel if df_rel else source_dir / "Dockerfile"
+        # A Dockerfile's COPY instructions are always relative to the actual
+        # build context Kaniko uses (build-image-local-task.yaml passes this
+        # same build-context as Kaniko's --context), never to repo root --
+        # dockerfile-path itself IS repo-root-relative (df_path above stays
+        # as-is), but its CONTENTS are not. Mirrors verify-artifacts' own
+        # context_dir computation (the sibling step in this same task) --
+        # that step already got this right; this one didn't, and a Dockerfile
+        # with entirely correct, context-relative COPY paths (e.g.
+        # 'COPY target/app.war .' in a monorepo subdirectory) was failing
+        # this check even though Kaniko would have built it successfully.
+        build_context = "$(params.build-context)"
+        context_dir = source_dir if build_context in (".", "./", "") \
+                      else source_dir / build_context.strip("./")
+
+        # ai-preflight already diagnosed this exact class of problem (right
+        # after clone, before compile/tests ran) -- if it flagged something,
+        # surface its note alongside whatever this step finds below instead of
+        # a bare "not found"/"missing" with no context. Best-effort: the
+        # ai-results workspace is optional, and a missing/malformed file here
+        # must never mask this step's own real error.
+        def _preflight_note():
+            try:
+                p = pathlib.Path("$(workspaces.ai-results.path)") / "preflight.json"
+                data = json.loads(p.read_text())
+                return data.get("note", "") if data.get("flagged") else ""
+            except Exception:
+                return ""
 
         # Single-stage, COPY-only by design (no RUN install/build) -- the
         # compile Task already produced the final artifact (vendor/, bin/,
@@ -6073,6 +6735,12 @@ spec:
                 df_path.write_text(default)
             else:
                 print(f"ERROR: Dockerfile not found at {df_path}")
+                note = _preflight_note()
+                if note:
+                    print(f"  ai-preflight's diagnosis (from right after clone): {note}")
+                print(f"  FIX: set 'Dockerfile path' in Edit App to the real path, relative "
+                      f"to repo root (not build context) -- e.g. for a monorepo, "
+                      f"'{'$(params.build-context)'.strip('./')}/Dockerfile'.")
                 sys.exit(1)
 
         lines = df_path.read_text().splitlines()
@@ -6106,11 +6774,11 @@ spec:
                     continue
                 src_clean = src.lstrip('./')
                 if '*' in src_clean or '?' in src_clean:
-                    matches = list(source_dir.glob(src_clean))
+                    matches = list(context_dir.glob(src_clean))
                     (found if matches else missing).append(
                         f"  {'OK' if matches else 'MISSING'} {src}")
                 else:
-                    full = source_dir / src_clean
+                    full = context_dir / src_clean
                     if full.exists():
                         found.append(f"  OK {src}  ({full.stat().st_size // 1024} KB)")
                     else:
@@ -6122,6 +6790,9 @@ spec:
         if missing:
             print("\nERROR: Dockerfile COPY sources missing:")
             for m in missing: print(m)
+            note = _preflight_note()
+            if note:
+                print(f"\n  ai-preflight's diagnosis (from right after clone): {note}")
             sys.exit(1)
         print(f"\nAll {len(found)} COPY source(s) verified OK")
 
@@ -9268,6 +9939,15 @@ spec:
           value: "$(params.dockerfile-path)"
         - name: TEST_DIR_IN
           value: "$(params.test-dir)"
+        - name: PIPELINE_RUN_ID
+          value: "$(params.pipeline-run-id)"
+        - name: OPERATOR_API_URL
+          value: "$(params.operator-api-url)"
+        - name: OPERATOR_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: gitops-operator-token
+              key: operatorApiToken
       script: |
         #!/usr/bin/env python3
         import fnmatch, json, os, pathlib, re, sys, textwrap, time
@@ -9325,6 +10005,31 @@ spec:
             except Exception as e:
                 print(f"Could not write preflight.json for report visibility: {e}")
 
+            # Report the note to the operator directly, independent of spec.ai.enabled
+            # -- the ai-results workspace above only ever reaches a human via the AI
+            # report (ai-aggregate), which is skipped entirely when AI is off for this
+            # run/app. This callback is the only way a flagged build-path problem
+            # (e.g. an ambiguous/missing Dockerfile in a monorepo) reaches the run's
+            # eventual synthetic failure report (pipelines_status.py) for an app with
+            # AI disabled. Never fatal -- same "this task never blocks the pipeline"
+            # principle as everything else here.
+            if flagged:
+                try:
+                    run_id = os.environ.get("PIPELINE_RUN_ID", "")
+                    api_url = os.environ.get("OPERATOR_API_URL", "")
+                    token = os.environ.get("OPERATOR_API_TOKEN", "")
+                    if run_id and api_url:
+                        headers = {"Content-Type": "application/json"}
+                        if token:
+                            headers["Authorization"] = f"Bearer {token}"
+                        req = urllib.request.Request(
+                            f"{api_url}/api/v1/pipelines/{run_id}/preflight-note",
+                            data=json.dumps({"note": note}).encode(),
+                            headers=headers, method="POST")
+                        urllib.request.urlopen(req, timeout=10)
+                except Exception as e:
+                    print(f"Could not report preflight note to operator (non-fatal): {e}")
+
         try:
             AI_PROVIDER = AI_API_KEY = AI_MODEL = ""
             try:
@@ -9353,6 +10058,7 @@ spec:
                 "poetry": ["pyproject.toml"], "pdm": ["pyproject.toml"],
                 "pipenv": ["Pipfile"], "uv": ["pyproject.toml"],
                 "cargo":  ["Cargo.toml"],
+                "make":   ["Makefile", "makefile", "GNUmakefile"],
             }
             IGNORE_DIRS = {".git", "node_modules", ".venv", "venv", "vendor", "target", "build",
                             "dist", ".next", "bin", "obj", "__pycache__", ".m2", ".gradle"}
@@ -9391,12 +10097,37 @@ spec:
             def exists(rel):
                 return bool(rel) and (SRC / rel).exists()
 
+            # build-file and test-dir are resolved by compile/test tasks from
+            # workingDir=source/build-context (every compile-*-task.yaml sets this),
+            # never from repo root -- unlike dockerfile-path, which Kaniko/pre-build
+            # genuinely do resolve from repo root. Confirmed live: with this
+            # distinction missing, AI correction picked a build-file path relative to
+            # repo root ('liberty-app/pom.xml') for an app whose build-context is
+            # already 'liberty-app', producing a double-nested path compile then
+            # failed to find. Candidate-finding/exists-checks for build-file/test-dir
+            # below are scoped to build-context; dockerfile-path's are deliberately
+            # left scoped to repo root.
+            _ctx_clean  = "" if BUILD_CONTEXT in (".", "./", "") else BUILD_CONTEXT.strip("./")
+            _ctx_prefix = (_ctx_clean + "/") if _ctx_clean else ""
+            _ctx_base   = SRC / _ctx_clean if _ctx_clean else SRC
+
+            def _in_context(paths):
+                if not _ctx_prefix:
+                    return list(paths)
+                return [p[len(_ctx_prefix):] for p in paths if p.startswith(_ctx_prefix)]
+
+            def exists_in_context(rel):
+                return bool(rel) and (_ctx_base / rel).exists()
+
+            def is_dir_in_context(rel):
+                return bool(rel) and (_ctx_base / rel).is_dir()
+
             # Filtered through _valid_path here (not just at the final write) so a
             # maliciously-named repo file (e.g. `Dockerfile.$(id)`) never becomes an
             # auto-correct or AI-selection candidate in the first place.
-            manifest_candidates   = [f for f in find(MANIFEST_GLOBS.get(BUILD_TOOL, [])) if _valid_path(f)]
+            manifest_candidates   = _in_context([f for f in find(MANIFEST_GLOBS.get(BUILD_TOOL, [])) if _valid_path(f)])
             dockerfile_candidates = [f for f in find(["Dockerfile", "Dockerfile.*", "*.dockerfile"]) if _valid_path(f)]
-            test_dir_candidates   = [d for d in find_dirs(TEST_DIR_NAMES) if _valid_path(d)]
+            test_dir_candidates   = _in_context([d for d in find_dirs(TEST_DIR_NAMES) if _valid_path(d)])
 
             fixed_build_file      = BUILD_FILE
             fixed_dockerfile_path = DOCKERFILE_PATH
@@ -9405,7 +10136,7 @@ spec:
             notes = []
 
             # -- build-file --
-            if BUILD_FILE and not exists(BUILD_FILE):
+            if BUILD_FILE and not exists_in_context(BUILD_FILE):
                 if len(manifest_candidates) == 1:
                     fixed_build_file = manifest_candidates[0]
                     notes.append(f"build-file '{BUILD_FILE}' not found; auto-corrected to "
@@ -9444,7 +10175,7 @@ spec:
             # this matters: pytest would silently collect zero tests and report that
             # as "0% coverage" with no indication the real problem is a stale path,
             # so this is the only place that failure mode gets surfaced clearly.
-            if TEST_DIR and not (SRC / TEST_DIR).is_dir():
+            if TEST_DIR and not is_dir_in_context(TEST_DIR):
                 if len(test_dir_candidates) == 1:
                     fixed_test_dir = test_dir_candidates[0]
                     notes.append(f"test-dir '{TEST_DIR}' not found; auto-corrected to "
@@ -9458,9 +10189,9 @@ spec:
                                  f"likely collect nothing; fix testDir on the app's Edit page.")
 
             # -- Ambiguous cases: ask AI to choose, constrained to real candidates only --
-            ambiguous = ((BUILD_FILE and not exists(BUILD_FILE) and len(manifest_candidates) > 1) or
+            ambiguous = ((BUILD_FILE and not exists_in_context(BUILD_FILE) and len(manifest_candidates) > 1) or
                          (DOCKERFILE_PATH and not exists(DOCKERFILE_PATH) and len(dockerfile_candidates) > 1) or
-                         (TEST_DIR and not (SRC / TEST_DIR).is_dir() and len(test_dir_candidates) > 1))
+                         (TEST_DIR and not is_dir_in_context(TEST_DIR) and len(test_dir_candidates) > 1))
 
             def call_ai(prompt):
                 if not AI_PROVIDER or not AI_API_KEY:
@@ -9525,11 +10256,16 @@ spec:
                     "STRICTLY from the candidate lists below -- never invent a path that isn't listed. "
                     "If no candidate is clearly correct, return null for that field.\n\n"
                     f"Language: {LANGUAGE}  Build tool: {BUILD_TOOL}\n"
-                    f"Configured build-file: '{BUILD_FILE}' (exists: {exists(BUILD_FILE)})\n"
-                    f"Candidate build manifests found: {json.dumps(manifest_candidates[:20])}\n"
+                    "build-file and test-dir are resolved relative to build-context (never repo root); "
+                    "dockerfile-path is resolved relative to repo root. Every candidate list below is "
+                    "already expressed in the correct base for its own field -- return a path exactly as "
+                    "it appears in its list, never repo-root-prefixed for build-file/test-dir.\n"
+                    f"Build-context: '{BUILD_CONTEXT}'\n"
+                    f"Configured build-file: '{BUILD_FILE}' (exists: {exists_in_context(BUILD_FILE)})\n"
+                    f"Candidate build manifests found (relative to build-context): {json.dumps(manifest_candidates[:20])}\n"
                     f"Configured dockerfile-path: '{DOCKERFILE_PATH}' (exists: {exists(DOCKERFILE_PATH)})\n"
-                    f"Candidate Dockerfiles found: {json.dumps(dockerfile_candidates[:20])}\n"
-                    f"Configured test-dir: '{TEST_DIR}' (exists: {(SRC / TEST_DIR).is_dir() if TEST_DIR else False})\n"
+                    f"Candidate Dockerfiles found (relative to repo root): {json.dumps(dockerfile_candidates[:20])}\n"
+                    f"Configured test-dir: '{TEST_DIR}' (exists: {is_dir_in_context(TEST_DIR)})\n"
                     f"Candidate test directories found: {json.dumps(test_dir_candidates[:20])}\n\n"
                 ) + PREFLIGHT_RULES
                 raw = call_ai(prompt)
