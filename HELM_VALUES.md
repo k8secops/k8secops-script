@@ -317,10 +317,13 @@ Images referenced by more than one template (the Tekton bootstrap Job, SonarQube
 | `vulnDbCacheServer.enabled` | `true` | One persistent PVC + nginx Service in `gitops-tooling`, kept warm on a schedule and served to every run's own cold per-run cache. |
 | `vulnDbCacheServer.storageClassName` | `""` | |
 | `vulnDbCacheServer.dataSize` | `3Gi` | |
-| `vulnDbCacheServer.owaspRefreshSchedule` | `0 3 * * *` (daily) | |
+| `vulnDbCacheServer.owaspRefreshSchedule` | `0 3 * * *` (daily) | Also editable at runtime via Admin → Settings (no `helm upgrade` needed) — see below. |
 | `vulnDbCacheServer.grypeRefreshSchedule` | `0 */6 * * *` (every 6h) | |
-| `vulnDbCacheServer.nvdApiKey` | `""` | Optional — cuts the OWASP refresh from 30-60 min to ~5 min. Free key: https://nvd.nist.gov/developers/request-an-api-key |
-| `vulnDbCacheServer.resources` | `300m/1Gi` request, `1000m/3Gi` limit | |
+| `vulnDbCacheServer.nvdApiKey` | `""` | Optional — cuts the OWASP refresh from 30-60 min to ~5 min and avoids NVD's stricter unauthenticated rate limits. Free key: https://nvd.nist.gov/developers/request-an-api-key. Also editable at runtime via Admin → Settings — see below. |
+| `vulnDbCacheServer.resources` | `300m/1Gi` request, `1000m/3Gi` limit | Used by the always-on nginx cache server and the Grype DB-update Job. |
+| `vulnDbCacheServer.owaspRefreshResources` | `500m/2Gi` request, `2000m/6Gi` limit | Separate, larger resource block for the OWASP refresh Job specifically — `dependency-check --updateonly` holds its whole index in memory while syncing NVD's ~370k records and was observed OOMKilling at the shared `resources` default above on a cold cache with no `nvdApiKey` set. Split out so raising this doesn't also inflate the always-on nginx server's footprint. |
+
+**Runtime override, no reinstall needed:** an admin can change `owaspRefreshSchedule` and `nvdApiKey` from the platform UI itself (Admin → Settings → "Dependency scanning (OWASP)") after install — this patches the live CronJob/Secret directly. The values above are only the install-time bootstrap defaults; a later `helm upgrade` that doesn't `--reuse-values` (or re-supplies these two keys) will reset the live objects back to whatever's in `values.yaml`, so re-save the Settings page afterward if that happens.
 
 ### `packageCacheServer` — dependency-package cache
 
@@ -339,7 +342,7 @@ Images referenced by more than one template (the Tekton bootstrap Job, SonarQube
 
 ### `toolVersions` — pinned scanner tool versions {#tool-versions}
 
-Single source of truth for every scanner image tag. Bump a version here, then run `make apply-platform` to re-render the Tekton task YAMLs. Full current list (30+ tools): `gitleaks`, `trufflehog`, `semgrep`, `bearer`, `sonar-scanner-cli`, `checkov`, `tflint`, `gosec`, `bandit`, `eslint`, `eslint-plugin-security`, `eslint-plugin-no-unsanitized`, `cargo-audit`, `owasp-dependency-check`, `osv-scanner`, `hadolint`, `buildkit`, `trivy`, `grype`, `syft`, `clamav`, `skopeo`, `cosign`, `git`. See `values.yaml`'s `toolVersions` block for exact pinned versions.
+Single source of truth for every scanner image tag. Bump a version here, then run `make apply-platform` to re-render the Tekton task YAMLs. Full current list (30+ tools): `gitleaks`, `trufflehog`, `semgrep`, `bearer`, `sonar-scanner-cli`, `checkov`, `tflint`, `gosec`, `bandit`, `eslint`, `eslint-plugin-security`, `eslint-plugin-no-unsanitized`, `cargo-audit`, `cppcheck`, `owasp-dependency-check`, `osv-scanner`, `hadolint`, `buildkit`, `trivy`, `grype`, `syft`, `clamav`, `skopeo`, `cosign`, `git`. `cppcheck` (C/C++ SAST) is pinned separately from the others — it's the one tool with no non-root runtime-install mechanism, so its image is custom-built from source (`docker/cppcheck/Dockerfile`) rather than re-tagged from an upstream vendor image. See `values.yaml`'s `toolVersions` block for exact pinned versions.
 
 ### `compatibleSet` / `toolVersionsNext`
 

@@ -731,13 +731,17 @@ spec:
       script: |
         #!/bin/sh
         mkdir -p "$HOME"
-        go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0 2>/dev/null || true
+        go install github.com/securego/gosec/v2/cmd/gosec@v2.22.0 2>&1
         export PATH="$HOME/go/bin:$PATH"
+        command -v gosec >/dev/null || echo "gosec WARNING: install failed -- binary not on PATH, scan will find nothing"
         mkdir -p $(workspaces.results.path)/sast
+        # gosec exits non-zero when it finds issues (not an error) -- `|| true`
+        # here is fine, but a missing/broken binary is now surfaced above
+        # instead of being silently indistinguishable from "0 findings".
         gosec -fmt sarif -out $(workspaces.results.path)/sast/gosec.sarif \
-          -nosec -quiet ./... 2>/dev/null || true
+          -nosec -quiet ./... 2>&1 || true
         gosec -fmt json -out $(workspaces.results.path)/sast/gosec.json \
-          -nosec -quiet ./... 2>/dev/null || true
+          -nosec -quiet ./... 2>&1 || true
         COUNT=$(python3 -c "
         import json
         try:
@@ -1786,17 +1790,28 @@ spec:
           type: RuntimeDefault
       script: |
         #!/bin/sh
+        # The published osv-scanner image ships the binary at /osv-scanner
+        # (root, not on PATH) -- calling the bare `osv-scanner` command fails
+        # with "not found" (exit 127), which the old `|| true` here swallowed
+        # completely: no report file was ever written, and the COUNT fallback
+        # below silently reported "0 vulnerabilities" on every single run
+        # regardless of the app's real dependencies. Confirmed live 2026-08-03.
         mkdir -p $(workspaces.results.path)/sca
-        osv-scanner \
+        # osv-scanner exits 1 by design when it finds vulnerabilities (not an
+        # error) and >1 on genuine failures -- `|| true` on its own can't tell
+        # those apart, so check the report file actually landed instead.
+        /osv-scanner \
           --recursive \
           --format sarif \
           --output $(workspaces.results.path)/sca/osv.sarif \
-          . 2>/dev/null || true
-        osv-scanner \
+          . 2>&1 || true
+        /osv-scanner \
           --recursive \
           --format json \
           --output $(workspaces.results.path)/sca/osv.json \
-          . 2>/dev/null || true
+          . 2>&1 || true
+        [ -f $(workspaces.results.path)/sca/osv.json ] || \
+          echo "OSV-Scanner WARNING: no report written -- scan did not run"
 
         COUNT=$(python3 -c "
         import json
@@ -9967,6 +9982,17 @@ spec:
 
 
         def _valid_path(p):
+            # "." (repo root) is the documented default build-context (see
+            # pipeline_builder_tasks.py's build-context param default) and is what
+            # nearly every app's config actually is -- but _SAFE_PATH requires an
+            # alphanumeric/underscore first character, which "." never satisfies.
+            # Without this carve-out, build-context "." was gated out as "invalid
+            # characters" on virtually every single run, falsely blanking a value
+            # that was never checked for auto-correction in the first place (see
+            # this task's build-context handling below) and raising a bogus "Build
+            # Config" coverage gap on the AI report. Confirmed live 2026-08-03.
+            if p == ".":
+                return True
             return bool(p) and bool(_SAFE_PATH.match(p)) and ".." not in p.split("/")
 
         SRC              = pathlib.Path("$(workspaces.source.path)")
