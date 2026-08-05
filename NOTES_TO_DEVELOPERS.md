@@ -1,8 +1,8 @@
-# Notes to Developers — Getting Your Application Repo Ready for GitOps Platform
+# Notes to Developers — Getting Your Application Repo Ready for k8secops-gate
 
-This document is for **application developers** onboarding a repository onto GitOps Platform. If you're the person who owns a Java/Python/Node/Go/.NET/Rust/TypeScript/Terraform repo and you've just been told "we're putting this through GitOps Platform," this is the doc that tells you exactly what the pipeline expects from your repo, and — since it's the thing most likely to quietly go wrong — how to write unit tests that the platform will actually pick up and report on correctly.
+This document is for **application developers** onboarding a repository onto k8secops-gate — not for engineers working on the platform's own codebase (see [docs/DEVELOPER_HANDOVER.md](DEVELOPER_HANDOVER.md) for that, and [docs/TESTING.md](TESTING.md) for how the platform tests *itself*). If you're the person who owns a Java/Python/Node/Go/.NET/Rust/TypeScript/C++/Terraform repo and you've just been told "we're putting this through k8secops-gate," this is the doc that tells you exactly what the pipeline expects from your repo, and — since it's the thing most likely to quietly go wrong — how to write unit tests that the platform will actually pick up and report on correctly.
 
-Every claim in this document is checked directly against the current pipeline task definitions (`platform/tekton/tasks/build/compile-*.yaml`, `platform/tekton/tasks/tests/test-*.yaml`, and their per-build-tool scripts under `scripts/<language>/`) as of 2026-07-29, not against a design intent that may have drifted from what's actually deployed.
+Every claim in this document is checked directly against the current pipeline task definitions (`platform/tekton/tasks/build/compile-*.yaml`, `platform/tekton/tasks/tests/test-*.yaml`, and their per-build-tool scripts under `platform/tekton/tasks/build/scripts/<language>/` and `platform/tekton/tasks/tests/scripts/<language>/`) as of 2026-08-03, not against a design intent that may have drifted from what's actually deployed.
 
 ---
 
@@ -19,15 +19,16 @@ Every claim in this document is checked directly against the current pipeline ta
 9. [Go](#go)
 10. [Rust](#rust)
 11. [TypeScript](#typescript)
-12. [Terraform](#terraform)
-13. [Extra credentials cheat sheet](#extra-credentials-cheat-sheet)
-14. [Troubleshooting checklist](#troubleshooting-checklist)
+12. [C/C++](#cc)
+13. [Terraform](#terraform)
+14. [Extra credentials cheat sheet](#extra-credentials-cheat-sheet)
+15. [Troubleshooting checklist](#troubleshooting-checklist)
 
 ---
 
 ## How the platform sees your repo
 
-When your app is onboarded, five pieces of information about your repo get recorded on a `GitOpsPipeline` Custom Resource: **language**, **build tool**, **build file path**, **build context** (for monorepos), and a handful of **test-related fields** specific to your language (test directory, test project file, test script name, etc. — see your language's section below). Everything else — which of the 14 security/quality scanners run, the Tekton DAG shape, the container image build — is derived from that plus your per-app scanner configuration.
+When your app is onboarded, five pieces of information about your repo get recorded on a `GitOpsPipeline` Custom Resource: **language**, **build tool**, **build file path**, **build context** (for monorepos), and a handful of **test-related fields** specific to your language (test directory, test project file, test script name, etc. — see your language's section below). Everything else — which of the 15 security/quality scanners run, the Tekton DAG shape, the container image build — is derived from that plus your per-app scanner configuration.
 
 A few things worth knowing up front, because they change how forgiving the platform is about repo layout:
 
@@ -55,7 +56,7 @@ Coverage threshold defaults to **80%** and is configurable per app (`tests.cover
 
 **Onboarding fields:** build tool (`maven` / `gradle` / `ant`), build file path (`pom.xml` / `build.gradle` / `build.xml`), JDK version (`17` or `21`), coverage threshold. Optional: **test module** — only needed for multi-module builds where tests live in a module other than the root.
 
-**Build tools supported:** Maven, Gradle, and Ant, each with its own dedicated script (`scripts/java/test-maven.sh`, `test-gradle.sh`, `test-ant.sh`). If your project ships a Maven Wrapper (`./mvnw`) or Gradle Wrapper (`./gradlew`), the pipeline prefers it over a system-installed Maven/Gradle — this matters if your project is pinned to a specific tool version, since compile and test would otherwise silently use different tool versions.
+**Build tools supported:** Maven, Gradle, and Ant, each with its own dedicated script (`platform/tekton/tasks/tests/scripts/java/test-maven.sh`, `test-gradle.sh`, `test-ant.sh`). If your project ships a Maven Wrapper (`./mvnw`) or Gradle Wrapper (`./gradlew`), the pipeline prefers it over a system-installed Maven/Gradle — this matters if your project is pinned to a specific tool version, since compile and test would otherwise silently use different tool versions.
 
 **How tests run and are reported:**
 - Maven: `mvn test` (or `mvnw test` if present) followed by `mvn jacoco:report`. Reuses the exact same local repository cache (`~/.m2`) that the compile stage already populated moments earlier in the same run — cold-cache Maven Central resolution only happens once per run, not once per stage.
@@ -64,6 +65,8 @@ Coverage threshold defaults to **80%** and is configurable per app (`tests.cover
 - Test results are collected from any `TEST-*.xml` files (standard Surefire/Gradle/Ant JUnit XML report format) anywhere under the project after the test run. Coverage is read from `jacoco.xml` — **your project needs the JaCoCo plugin configured** (Maven: `jacoco-maven-plugin`; Gradle: the `jacoco` plugin) for coverage to be collected at all. Without it, tests still run and report pass/fail correctly, but coverage reads as 0%.
 
 **Multi-module projects:** set `testModule` to the module containing your tests (e.g. `app-tests`) — this scopes both `mvn test -pl <module>` / `mvn jacoco:report -pl <module>` and `gradlew :<module>:test :<module>:jacocoTestReport` to that module specifically. Leave it blank for a standard single-module `src/test` layout.
+
+**Packaging: JAR, WAR, or EAR are all supported** — a Jakarta/Java EE webapp (WebSphere Liberty, Open Liberty, Tomcat, ...) packages as a WAR, not a runnable JAR, and `mvn package`/`gradlew assemble` already produce whichever your `pom.xml`/`build.gradle` declares. Your Dockerfile just needs to `COPY` the right artifact for your runtime -- e.g. for Open Liberty, `COPY target/*.war /config/apps/` plus your own `server.xml`, then `RUN configure.sh` (see the `liberty-app` sample in the separate `k8secops/testapps` repo — not part of this repository — for a complete working example). The platform's own artifact-verification step checks for a `.jar`/`.war`/`.ear` generically, not a runnable JAR specifically.
 
 **SAST note:** SpotBugs runs as this language's static-analysis tool and needs the project to **compile cleanly first** — a project that doesn't build will show as a SpotBugs failure, not necessarily a SpotBugs configuration problem.
 
@@ -87,7 +90,7 @@ Coverage threshold defaults to **80%** and is configurable per app (`tests.cover
 
 **Onboarding fields:** requirements file path (optional — `requirements.txt` / `pyproject.toml` / `Pipfile`, or leave blank for auto-detect), package manager (`pip` / `poetry` / `pdm` / `pipenv` / `uv`), Python version (`3.10`–`3.13`), coverage threshold. Optional: **test directory** (`tests.testDir`) — leave blank for pytest's own auto-discovery from repo root.
 
-**How dependencies and tests are installed:** the test stage first checks for a `./vendor` virtualenv already created by the compile stage moments earlier — if your package manager is poetry/pdm/pipenv/uv, compile already installed your real dependencies there, and the test stage activates it and just adds `pytest`/`pytest-cov` on top, rather than re-running your package manager's install a second time. If no `./vendor` exists (bare pip projects, or if compile didn't run for some reason), it falls back to a fresh `pip install --user` using your configured package manager's own script under `scripts/python/`.
+**How dependencies and tests are installed:** the test stage first checks for a `./vendor` virtualenv already created by the compile stage moments earlier — if your package manager is poetry/pdm/pipenv/uv, compile already installed your real dependencies there, and the test stage activates it and just adds `pytest`/`pytest-cov` on top, rather than re-running your package manager's install a second time. If no `./vendor` exists (bare pip projects, or if compile didn't run for some reason), it falls back to a fresh `pip install --user` using your configured package manager's own script under `platform/tekton/tasks/tests/scripts/python/`.
 
 **Test-only dependencies:** if your test suite needs packages your runtime code doesn't (mocking libraries, `pytest` plugins, etc.), put them in a **`requirements-dev.txt`** file in the same directory as your main build file — this is picked up automatically and installed on top of your runtime deps, best-effort (silently skipped if you don't use this convention). Alternatively, a `pyproject.toml` with a `[test]` extra (`pip install -e ".[test]"`) is also tried automatically.
 
@@ -163,11 +166,29 @@ Tests run via **`gotestsum`** (pinned to `v1.12.0`, not `@latest`, for reproduci
 
 ---
 
+## C/C++
+
+**Onboarding fields:** Makefile path, GCC version (`12` / `13` / `14`), coverage threshold. No test filter field -- `make test` always runs the project's whole test target, there's no per-test-name filtering concept the way `cargo test`/`go test` have.
+
+**The one thing every other build tool on this platform has that C/C++ doesn't: a dependency manager.** There's no Maven Central, no crates.io, no npm registry equivalent for plain Makefile/GCC projects -- if your build needs a third-party library, you vendor it yourself (checked-in headers/sources, a git submodule, or a system package your Dockerfile installs) or fetch it with your own `curl`/`wget` inside your Makefile. This also means there's no `extraCredentials.buildTool` option for C/C++ (no `BUILD_TOOL_LANGUAGES` entry) -- if your build genuinely needs an authenticated download, use a `secret-manager` extra credential with `section: build` instead (see the [extra credentials cheat sheet](#extra-credentials-cheat-sheet)), not the private-package-registry category the other languages use.
+
+**Compile and test are two separate Makefile targets, on purpose:** the compile stage runs plain `make` with no target argument (your `Makefile`'s default target), and must build ONLY -- not run tests. Test stage runs `make test` explicitly, a separate target you define. This is the same convention as this platform's Ant support (`ant` vs `ant test`) for the same reason: neither build tool has a standardized "skip tests" flag the way Maven/Gradle/cargo/go do, so the platform relies on your project's own target split instead.
+
+**Your compiled binary needs to land in `./bin`** (relative to your build context) -- same convention as this platform's Go and Rust support. Your Dockerfile then just `COPY`s it in; Kaniko never re-runs your build tool.
+
+**Coverage is genuinely collected here, unlike Rust.** GCC's own `--coverage`/`gcov` instrumentation needs no `ptrace` or nightly-only compiler features (unlike `cargo-tarpaulin`/`grcov`, which are unreliable under this platform's restricted-PSA test pods) -- so if your `make test` target compiles with `--coverage` (or `-fprofile-arcs -ftest-coverage`) and leaves `.gcno`/`.gcda` files anywhere under your build context, the platform finds them, runs `gcov`, and reports a real percentage. **Only source files under a top-level `src/` directory are counted** -- `gcov` also reports on every transitively-included system/STL header by default, which would otherwise dominate the number with unrelated libstdc++ template-instantiation coverage that has nothing to do with your own code's test coverage.
+
+**How tests run and are reported:** `make test` (or `make -f <your-makefile> test` if you didn't name it `Makefile`). Since C/C++ has no built-in JUnit-equivalent output and no single dominant test framework (CTest, Catch2, GoogleTest, or a hand-rolled runner are all common), results are parsed from your test target's own `test result: ok. N passed; M failed` summary line -- the exact same convention (and parsing logic) as this platform's Rust support. **Your test binary needs to print a line in that exact format** for pass/fail counts to be picked up; if you're not using a framework that already does this, write a small wrapper that does (see the `cpp-app` sample's `tests/testing.h` in the separate `k8secops/testapps` repo — not part of this repository — for a working ~40-line example with no third-party dependency).
+
+**SAST note:** `cppcheck` runs as this language's static-analysis tool, with `--enable=warning,style,performance,portability`. Unlike every other SAST tool on this platform, cppcheck's own container image is custom-built from source (there's no official cppcheck Docker image to re-tag, and it has no non-root install mechanism the way `go install`/`cargo install`/`pip install --user` give the other runtime-installed tools) -- this is a platform-operations detail, not something that affects your onboarding.
+
+---
+
 ## Terraform
 
 **Onboarding fields:** none beyond language selection — Terraform apps have **no build tool, build file, build version, or test fields at all**, because there's no compile/build/test/image stage in this language's pipeline. This is intentional, not a gap: Terraform's own `.tf` files *are* the artifact being scanned, not something this platform compiles or containerizes.
 
-**What actually runs:** `clone → secrets-scan → checkov + tflint (parallel) → ai-analysis → human-gate → done`. That's the entire pipeline — no compile stage, no unit-tests stage, no Docker build, no image push, no signing. Checkov (`.tf`/`.tf.json`, with `.terraform/` and `.terragrunt-cache/` excluded so generated/vendored files don't get scanned) and tflint (`--recursive`, so submodules under `modules/`, `environments/*`, etc. are covered) both run **on by default** for this language specifically — this is the one case where IaC scanning is genuinely in-scope for this platform, unlike a normal app repo's own deployment manifests — this platform builds/scans/signs/pushes application images, it doesn't manage CD or scan a normal app's own deployment manifests, Terraform repos being the one deliberate exception since the `.tf` files themselves are the artifact being scanned.
+**What actually runs:** `clone → secrets-scan → checkov + tflint (parallel) → ai-analysis → human-gate → done`. That's the entire pipeline — no compile stage, no unit-tests stage, no Docker build, no image push, no signing. Checkov (`.tf`/`.tf.json`, with `.terraform/` and `.terragrunt-cache/` excluded so generated/vendored files don't get scanned) and tflint (`--recursive`, so submodules under `modules/`, `environments/*`, etc. are covered) both run **on by default** for this language specifically — this is the one case where IaC scanning is genuinely in-scope for this platform, unlike a normal app repo's own deployment manifests (see [core-principles/07-ci-only-scope-discipline.md](../core-principles/07-ci-only-scope-discipline.md)).
 
 **If you're onboarding a Terraform repo expecting a `unit-tests` stage or a coverage number**, there isn't one — this is a scan-only language, and "testing" your Terraform means the security/IaC scanners themselves, not a unit test suite.
 
@@ -202,3 +223,4 @@ Before assuming a platform bug when your test stage doesn't look right:
 6. **A misconfigured `build-file`/`dockerfile-path`/`test-dir` might silently self-correct** via `ai-preflight` — deterministically if there's exactly one real candidate on disk, or via a constrained AI pick if there are several and your app has AI credentials configured. Check the preflight step's own log output (or the run's AI report — it writes there too) to see if this happened before assuming your onboarding config is being ignored. **`build-context` is never touched by this mechanism** — a wrong `build-context` fails loudly at Kaniko/compile time instead, with no auto-recovery. If you're chasing a recurring path error, check `build-context` by hand first.
 7. **Monorepo paths not resolving** — confirm `buildContext` and your language's test-directory-style field (`testDir`, `testFile`, etc.) are both given consistently relative to repo root, not relative to `buildContext` itself; the platform strips the `buildContext/` prefix for you, but only when your value is actually prefixed with it.
 8. **A TypeScript compile failure on a type error you weren't expecting to block the build** — this is deliberate (see [TypeScript](#typescript)); fix the type error rather than looking for a way to skip the check, since there isn't a supported way to disable `tsc --noEmit` short of fixing your `tsconfig.json`'s strictness settings.
+9. **Coverage reading as 0% for C/C++** — unlike Rust, this isn't expected; it means your `make test` target didn't compile with `--coverage`/`-fprofile-arcs -ftest-coverage`, or no `.gcno`/`.gcda` files were left anywhere under your build context for the platform's `gcov` step to find (see [C/C++](#cc)). Check the `test` step's own logs for whether any `gcov` output was produced at all.

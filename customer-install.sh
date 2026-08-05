@@ -162,11 +162,89 @@ info "database download (from 30-60 min to ~5 min). Get a free key at:"
 info "  nvd.nist.gov/developers/request-an-api-key"
 read -rp "  NVD API key (optional, press Enter to skip): " NVD_API_KEY
 
+# ── Database ────────────────────────────────────────────────────────────────
+# A managed provider (RDS, Cloud SQL, Azure Database for PostgreSQL, ...) is
+# RECOMMENDED for production -- HA, automated backups, and patching become
+# the provider's job instead of this platform's. The in-cluster PostgreSQL
+# pod installed by default otherwise is meant for development/trial use, or
+# a last resort where no managed option exists.
+echo ""
+if [[ -n "${DB_MODE:-}" ]]; then
+  info "DB_MODE set via environment: ${DB_MODE}"
+elif [[ -n "${EXISTING_DB_PWD:-}" ]]; then
+  # Re-install against a cluster that already has the in-cluster DB running
+  # -- don't re-prompt into external against a live internal database.
+  DB_MODE="internal"
+  info "Re-install detected — reusing the existing in-cluster PostgreSQL."
+else
+  echo "  Database:"
+  echo "    [1] Use a managed PostgreSQL you already have (RDS, Cloud SQL, Azure"
+  echo "        Database for PostgreSQL, ...) — RECOMMENDED for production"
+  echo "    [2] Install PostgreSQL in gitops-db namespace (Kind-friendly defaults)"
+  echo "        — development/trial use, or a last resort. Only PostgreSQL"
+  echo "        13-16 is supported."
+  read -rp "  Database option [1/2]: " _db_choice
+  if [[ "${_db_choice}" == "1" ]]; then
+    DB_MODE="external"
+  else
+    DB_MODE="internal"
+  fi
+fi
+
+if [[ "${DB_MODE}" == "external" ]]; then
+  [[ -n "${DB_EXT_HOST:-}" ]]     || read -rp  "  PostgreSQL host: " DB_EXT_HOST
+  [[ -n "${DB_EXT_PORT:-}" ]]     || read -rp  "  Port [5432]: " DB_EXT_PORT
+  DB_EXT_PORT="${DB_EXT_PORT:-5432}"
+  [[ -n "${DB_EXT_NAME:-}" ]]     || read -rp  "  Database name [gitops_platform]: " DB_EXT_NAME
+  DB_EXT_NAME="${DB_EXT_NAME:-gitops_platform}"
+  [[ -n "${DB_EXT_USERNAME:-}" ]] || read -rp  "  Username: " DB_EXT_USERNAME
+  if [[ -z "${DB_EXT_PASSWORD:-}" ]]; then
+    read -rsp "  Password: " DB_EXT_PASSWORD; echo ""
+  fi
+  DB_EXT_SSLMODE="${DB_EXT_SSLMODE:-require}"
+
+  # Hard preflight -- an unsupported DB version failing silently later (a
+  # missing JSONB operator, a changed default, etc.) would be far more
+  # confusing than refusing up front. Both "can't connect" and "wrong
+  # version" are refused the same way, overridable by the same env var --
+  # a managed DB reachable only from inside the cluster (a common RDS/Cloud
+  # SQL private-subnet setup) will always fail to connect from wherever
+  # this script happens to run, and that's a network-reachability issue,
+  # not a real compatibility problem.
+  if [[ "${SKIP_DB_VERSION_CHECK:-}" == "true" ]]; then
+    warn "Skipping external database version check (SKIP_DB_VERSION_CHECK=true)."
+  elif ! command -v psql &>/dev/null; then
+    error "psql not found -- cannot verify the external database's PostgreSQL version (13-16 supported, tested against 16)."
+    error "Install the postgresql-client package, or re-run with SKIP_DB_VERSION_CHECK=true to proceed without verifying."
+    exit 1
+  else
+    info "Verifying external PostgreSQL version..."
+    if ! DB_VER=$(PGPASSWORD="${DB_EXT_PASSWORD}" PGSSLMODE="${DB_EXT_SSLMODE}" \
+        psql -h "${DB_EXT_HOST}" -p "${DB_EXT_PORT}" -U "${DB_EXT_USERNAME}" -d "${DB_EXT_NAME}" \
+        -tAc "SHOW server_version_num;" 2>&1); then
+      error "Could not connect to the external database at ${DB_EXT_HOST}:${DB_EXT_PORT} to verify its version:"
+      error "  ${DB_VER}"
+      error "If this is expected (e.g. only reachable from inside the cluster, not from where this"
+      error "script is running), re-run with SKIP_DB_VERSION_CHECK=true."
+      exit 1
+    fi
+    DB_MAJOR=$(( ${DB_VER//[[:space:]]/} / 10000 ))
+    if (( DB_MAJOR < 13 || DB_MAJOR > 16 )); then
+      error "Connected PostgreSQL is version ${DB_MAJOR}.x -- this platform supports PostgreSQL 13-16"
+      error "(tested against 16). Re-run with SKIP_DB_VERSION_CHECK=true to override."
+      exit 1
+    fi
+    info "PostgreSQL ${DB_MAJOR}.x confirmed supported."
+  fi
+fi
+
 # ── Auto-generated credentials ─────────────────────────────────────────────────
 UI_ADMIN_USERNAME="admin"
 OPERATOR_API_TOKEN="${EXISTING_TOKEN:-$(gen_token)}"
 SONARQUBE_PASSWORD="$(gen_token | head -c 20)"
-DB_PASSWORD="${EXISTING_DB_PWD:-$(gen_token | head -c 24)}"
+if [[ "${DB_MODE}" == "internal" ]]; then
+  DB_PASSWORD="${EXISTING_DB_PWD:-$(gen_token | head -c 24)}"
+fi
 SECRET_KEY="${EXISTING_SECRET_KEY:-$(gen_token)}"
 # Generated independently of OPERATOR_API_TOKEN so the two can be rotated
 # separately -- without its own key, credential-at-rest encryption falls back
@@ -300,6 +378,22 @@ else
   warn "ValidatingAdmissionPolicy not available on this cluster (needs K8s 1.28+ with the beta feature enabled, GA from 1.30+) — rbacHardening left off. Consider upgrading or enabling the feature gate, then: helm upgrade gitops-platform ... --reuse-values --set rbacHardening.enabled=true"
 fi
 
+if [[ "${DB_MODE}" == "external" ]]; then
+  DB_VALUES_YAML="database:
+  mode: external
+  external:
+    host: '$(yesc "${DB_EXT_HOST}")'
+    port: ${DB_EXT_PORT}
+    database: '$(yesc "${DB_EXT_NAME}")'
+    username: '$(yesc "${DB_EXT_USERNAME}")'
+    password: '$(yesc "${DB_EXT_PASSWORD}")'
+    sslmode: '$(yesc "${DB_EXT_SSLMODE}")'"
+else
+  DB_VALUES_YAML="database:
+  internal:
+    password: '$(yesc "${DB_PASSWORD}")'"
+fi
+
 TMP_VALUES=$(mktemp)
 trap 'rm -f "${TMP_VALUES}"' EXIT
 
@@ -316,9 +410,7 @@ sonarqube:
   adminPassword: '$(yesc "${SONARQUBE_PASSWORD}")'
 vulnDbCacheServer:
   nvdApiKey: '$(yesc "${NVD_API_KEY:-}")'
-database:
-  internal:
-    password: '$(yesc "${DB_PASSWORD}")'
+${DB_VALUES_YAML}
 global:
   pipelineDockerHub:
     username: '$(yesc "${DOCKERHUB_USERNAME:-}")'
@@ -348,41 +440,45 @@ helm upgrade --install gitops-platform "${CHART_OCI}" \
 
 info "Helm chart installed"
 
-# ── Wait for PostgreSQL before proceeding ─────────────────────────────────────
-# The operator connects to PostgreSQL on startup. If PostgreSQL isn't ready it
-# crashes and enters CrashLoopBackOff. Wait here so the operator finds it ready.
-info "Waiting for PostgreSQL to be ready (may take 60-90s on first install)..."
-kubectl rollout status statefulset/gitops-platform-postgresql \
-  -n gitops-db --timeout=180s >/dev/null
+if [[ "${DB_MODE}" == "internal" ]]; then
+  # ── Wait for PostgreSQL before proceeding ───────────────────────────────────
+  # The operator connects to PostgreSQL on startup. If PostgreSQL isn't ready it
+  # crashes and enters CrashLoopBackOff. Wait here so the operator finds it ready.
+  info "Waiting for PostgreSQL to be ready (may take 60-90s on first install)..."
+  kubectl rollout status statefulset/gitops-platform-postgresql \
+    -n gitops-db --timeout=180s >/dev/null
 
-# ── Reconcile PostgreSQL password ────────────────────────────────────────────
-# When the PostgreSQL PVC is reused from a previous install the data directory
-# already has an old password. POSTGRES_PASSWORD is only honoured on first init.
-# Extract the password Helm put in the secret and force-set it via local socket
-# (which uses trust auth inside the pod) so the operator can connect.
-DB_URL=$(kubectl get secret gitops-db-credentials -n "${NS_CORE}" \
-  -o jsonpath='{.data.database-url}' 2>/dev/null | base64 -d)
-# Bash-native parse (no subprocess) -- DB_URL never becomes a separate
-# process's command-line argument this way, so the password can't briefly
-# appear in `ps`/`/proc/*/cmdline` output to any other process on the host.
-DB_PASS=""
-if [[ "${DB_URL}" =~ ^[a-zA-Z]+://[^:@/]+:([^@]+)@ ]]; then
-  DB_PASS="${BASH_REMATCH[1]}"
-fi
-if [[ -n "${DB_PASS}" ]]; then
-  # SQL passed via stdin (heredoc), not a `-c` argument -- same reasoning:
-  # psql's own argv must never contain the password.
-  if kubectl exec -i -n "${NS_DB}" statefulset/gitops-platform-postgresql -- \
-      psql -U gitops -d gitops_platform >/dev/null 2>&1 <<SQL
+  # ── Reconcile PostgreSQL password ──────────────────────────────────────────
+  # When the PostgreSQL PVC is reused from a previous install the data directory
+  # already has an old password. POSTGRES_PASSWORD is only honoured on first init.
+  # Extract the password Helm put in the secret and force-set it via local socket
+  # (which uses trust auth inside the pod) so the operator can connect.
+  DB_URL=$(kubectl get secret gitops-db-credentials -n "${NS_CORE}" \
+    -o jsonpath='{.data.database-url}' 2>/dev/null | base64 -d)
+  # Bash-native parse (no subprocess) -- DB_URL never becomes a separate
+  # process's command-line argument this way, so the password can't briefly
+  # appear in `ps`/`/proc/*/cmdline` output to any other process on the host.
+  DB_PASS=""
+  if [[ "${DB_URL}" =~ ^[a-zA-Z]+://[^:@/]+:([^@]+)@ ]]; then
+    DB_PASS="${BASH_REMATCH[1]}"
+  fi
+  if [[ -n "${DB_PASS}" ]]; then
+    # SQL passed via stdin (heredoc), not a `-c` argument -- same reasoning:
+    # psql's own argv must never contain the password.
+    if kubectl exec -i -n "${NS_DB}" statefulset/gitops-platform-postgresql -- \
+        psql -U gitops -d gitops_platform >/dev/null 2>&1 <<SQL
 ALTER USER gitops WITH PASSWORD '${DB_PASS}';
 SQL
-  then
-    info "PostgreSQL password reconciled"
-  else
-    warn "Password reconcile skipped (harmless on fresh DB)"
+    then
+      info "PostgreSQL password reconciled"
+    else
+      warn "Password reconcile skipped (harmless on fresh DB)"
+    fi
   fi
+  info "PostgreSQL ready"
+else
+  info "External database in use — skipping in-cluster PostgreSQL wait/reconcile."
 fi
-info "PostgreSQL ready"
 
 # ── Step 5: Scanner tasks ─────────────────────────────────────────────────────
 section "Step 5 — Applying 30+ security scanner tasks"

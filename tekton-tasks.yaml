@@ -57,6 +57,9 @@ spec:
             - ALL
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "200m", memory: "256Mi"}
+        limits:   {cpu: "1000m", memory: "1Gi"}
       env:
         # uid 65532 has no /etc/passwd entry, so $HOME is empty and
         # `git config --global` has nowhere writable to land.
@@ -174,6 +177,9 @@ spec:
           drop: [ALL]
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "300m", memory: "512Mi"}
+        limits:   {cpu: "1500m", memory: "2Gi"}
       script: |
         #!/bin/sh
         set -e
@@ -222,6 +228,9 @@ spec:
           drop: [ALL]
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "300m", memory: "512Mi"}
+        limits:   {cpu: "1500m", memory: "2Gi"}
       env:
         # uid 65532 has no /etc/passwd entry -- set HOME so git works internally
         - name: HOME
@@ -298,6 +307,9 @@ spec:
             - ALL
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "300m", memory: "512Mi"}
+        limits:   {cpu: "1000m", memory: "2Gi"}
       env:
         # uid 1000 has no /etc/passwd entry, so $HOME is empty and
         # `pip install --user` has nowhere writable to land.
@@ -515,6 +527,9 @@ spec:
           drop: [ALL]
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "300m", memory: "512Mi"}
+        limits:   {cpu: "1000m", memory: "2Gi"}
       script: |
         mkdir -p $(workspaces.results.path)/sast
         cppcheck \
@@ -645,6 +660,9 @@ spec:
             - ALL
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "300m", memory: "512Mi"}
+        limits:   {cpu: "1000m", memory: "2Gi"}
       env:
         # uid 1000 has no /etc/passwd entry, so $HOME is empty and
         # `npm install --global` has no writable prefix to install into.
@@ -723,6 +741,9 @@ spec:
             - ALL
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "300m", memory: "512Mi"}
+        limits:   {cpu: "1000m", memory: "2Gi"}
       env:
         # uid 1000 has no /etc/passwd entry, so $HOME is empty and
         # `go install`/the module cache have nowhere writable to land.
@@ -843,6 +864,9 @@ spec:
             - ALL
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "300m", memory: "512Mi"}
+        limits:   {cpu: "1500m", memory: "2Gi"}
       env:
         # uid 1000 has no /etc/passwd entry, so $HOME is empty and dotnet
         # can't create ~/.dotnet, ~/.nuget, or its first-run dirs.
@@ -932,6 +956,9 @@ spec:
             - ALL
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "300m", memory: "512Mi"}
+        limits:   {cpu: "1500m", memory: "2Gi"}
       env:
         # uid 1000 has no /etc/passwd entry -- `cargo install` and clippy's
         # own cache have nowhere writable to land without an explicit HOME.
@@ -1920,6 +1947,9 @@ spec:
           drop: [ALL]
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "500m", memory: "1Gi"}
+        limits:   {cpu: "2000m", memory: "3Gi"}
       env:
         - name: HOME
           value: "$(workspaces.results.path)/.cpp-home"
@@ -2412,6 +2442,9 @@ spec:
             - ALL
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "500m", memory: "1Gi"}
+        limits:   {cpu: "2000m", memory: "3Gi"}
       env:
         # uid 1000 has no /etc/passwd entry, so $HOME is empty and
         # `go install`/the module cache have nowhere writable to land.
@@ -3021,6 +3054,9 @@ spec:
             - ALL
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "500m", memory: "1Gi"}
+        limits:   {cpu: "2000m", memory: "3Gi"}
       env:
         # HOME deliberately matches compile-nodejs-task.yaml's value exactly
         # (not a fresh/results-workspace path) -- node_modules/ is already
@@ -3290,6 +3326,9 @@ spec:
             - ALL
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "500m", memory: "1Gi"}
+        limits:   {cpu: "2000m", memory: "3Gi"}
       env:
         # uid 1000 has no /etc/passwd entry, so $HOME is empty and
         # `pip install --user` has nowhere writable to land.
@@ -3573,6 +3612,9 @@ spec:
           drop: [ALL]
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "500m", memory: "1Gi"}
+        limits:   {cpu: "2000m", memory: "3Gi"}
       env:
         - name: HOME
           value: "$(workspaces.results.path)/.rust-home"
@@ -5855,6 +5897,150 @@ spec:
         esac
         echo """ TypeScript compile complete """
 
+# Source: platform/tekton/tasks/build/custom-scanner-task.yaml
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gitops-custom-scanner
+  namespace: gitops-core
+  labels:
+    gitops-platform.io/stage: custom-scanner
+spec:
+  description: >
+    Runs an admin-registered third-party scanner tool (see
+    gitops_shared/db/scanner_registry_store.py) -- an arbitrary customer image
+    + shell command, generic across every scanner category and every vendor.
+    The command is responsible for writing a SARIF 2.1.0 file into
+    scan-results/<category>/ -- any correctly-placed SARIF file there is
+    picked up automatically by the same generic *.sarif ingestion the
+    built-in scanners use (platform/tekton/tasks/ai/scripts/analyze-*.py),
+    with zero platform code changes needed per tool. One Task, reused by
+    every customer/vendor -- only the params differ per scanner definition,
+    resolved fresh at trigger time (see run_trigger.py), never baked into a
+    per-customer Task.
+
+    Never blocks the rest of the pipeline (onError:continue at the Pipeline
+    level) -- a broken or misconfigured customer scanner degrades to a scan
+    gap, not a pipeline failure.
+  params:
+    - name: scanner-image
+      description: "The scanner's own container image -- must be publicly pullable, or already covered by the platform-wide admin-configured image-pull credential. Must be able to run as uid 1000, non-root, no added capabilities (see securityContext below) -- an image requiring root fails closed, not silently privileged."
+    - name: scanner-command
+      description: "Shell command run inside the image. Must write its SARIF output to $RESULTS_DIR/<any-filename>.sarif (RESULTS_DIR already points at the category-specific subdirectory -- do not append the category again). cwd is the cloned source for secrets/sast/sca scanners; $IMAGE_TAR_PATH is set instead for image-scan scanners -- see workspaces below."
+    - name: output-category
+      description: "secrets|sast|sca|image-scan -- which scan-results subdirectory this scanner's output belongs in."
+  workspaces:
+    - name: source
+      optional: true
+      description: "Cloned repo source -- bound for secrets/sast/sca-category scanners. Not bound for image-scan (there's no source stage at that point in the DAG)."
+    - name: image-tar
+      optional: true
+      description: "Raw Kaniko --no-push OCI tarball -- bound only for image-scan-category scanners, exposed to scanner-command as $IMAGE_TAR_PATH (not raw Tekton workspace syntax, which can't be resolved from inside an already-substituted param value). No live registry reference and no Docker daemon are available; a scanner needing either must convert the tar itself (e.g. via skopeo/crane)."
+    - name: results
+      description: "Shared scan-results workspace -- same one every built-in scanner writes into."
+    - name: extra-service-creds
+      optional: true
+      description: "Consolidated Secret of {envVarName: value} pairs for this app's declared secret-manager credentials with section=both. This is how a scanner license key/API token reaches the command -- declare a normal extraCredentials row and reference its envVarName directly in scanner-command."
+    - name: extra-generic-build-creds
+      optional: true
+      description: "Same as extra-service-creds, for section=build credentials."
+  steps:
+    # Same generic FILE__ credential-materialization pattern precompile-task.yaml
+    # uses -- see that file's own materialize-creds step for the full rationale.
+    - name: materialize-creds
+      image: k8secops/k8secops:python-3.12-slim
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.results.path)/.custom-scanner-home"
+      script: |
+        #!/usr/bin/env python3
+        import pathlib, os
+
+        home = pathlib.Path(os.environ["HOME"])
+        home.mkdir(parents=True, exist_ok=True)
+
+        svc_lines: list[str] = []
+        for raw_ws_path in ("$(workspaces.extra-service-creds.path)",
+                             "$(workspaces.extra-generic-build-creds.path)"):
+            if not raw_ws_path:
+                continue
+            svc_dir = pathlib.Path(raw_ws_path)
+            if not svc_dir.is_dir():
+                continue
+            for f in sorted(svc_dir.iterdir()):
+                if not f.is_file():
+                    continue
+                if f.name.startswith("FILE__"):
+                    base = f.name[len("FILE__"):]
+                    svc_lines.append(f"export {base}_FILE='{f}'")
+                else:
+                    svc_lines.append(f"export {f.name}=\"$(cat '{f}')\"")
+        if svc_lines:
+            (home / ".custom-scanner-creds.env").write_text("\n".join(svc_lines) + "\n")
+            print(f"Wrote {len(svc_lines)} credential env var(s) for this scanner")
+        else:
+            print("No credentials declared for this scanner -- skipping")
+
+    - name: run-scanner
+      image: $(params.scanner-image)
+      imagePullPolicy: IfNotPresent
+      # No static workingDir here -- source is an optional, UNBOUND workspace
+      # for image-scan-category scanners, and Tekton's variable substitution
+      # runs (and can fail admission) on static fields like this regardless
+      # of whether anything downstream would actually use the value. Both
+      # workspace paths below are instead resolved inside the script, gated
+      # on the documented $(workspaces.<name>.bound) check -- the only safe
+      # way to reference an optional workspace's .path that might not exist.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: HOME
+          value: "$(workspaces.results.path)/.custom-scanner-home"
+        - name: RESULTS_DIR
+          value: "$(workspaces.results.path)/$(params.output-category)"
+        - name: OUTPUT_CATEGORY
+          value: "$(params.output-category)"
+      computeResources:
+        requests: {cpu: "300m", memory: "512Mi"}
+        limits:   {cpu: "1500m", memory: "2Gi"}
+      script: |
+        #!/bin/sh
+        set -e
+        mkdir -p "$RESULTS_DIR"
+        [ -f "$HOME/.custom-scanner-creds.env" ] && . "$HOME/.custom-scanner-creds.env"
+        # source: bound for secrets/sast/sca scanners -- cd into the clone so
+        # a command like `-s .` or `mvn compile` works exactly as the admin
+        # expects, matching every other scan task's convention.
+        if [ "$(workspaces.source.bound)" = "true" ]; then
+          cd "$(workspaces.source.path)"
+        fi
+        # image-tar: bound for image-scan scanners only -- exported as a
+        # plain shell var (not raw Tekton syntax) so scanner-command can
+        # reference $IMAGE_TAR_PATH without needing Tekton substitution
+        # inside a value that's itself already a substituted param.
+        if [ "$(workspaces.image-tar.bound)" = "true" ]; then
+          export IMAGE_TAR_PATH="$(workspaces.image-tar.path)/image.tar"
+        fi
+        echo "Running custom scanner (category: $OUTPUT_CATEGORY, image: $(params.scanner-image))"
+        $(params.scanner-command)
+        echo "Custom scanner completed"
+
 # Source: platform/tekton/tasks/build/dockerfile-check-task.yaml
 ---
 apiVersion: tekton.dev/v1
@@ -5973,6 +6159,9 @@ spec:
           drop: [ALL]
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "100m", memory: "128Mi"}
+        limits:   {cpu: "300m", memory: "512Mi"}
       script: |
         #!/bin/sh
         mkdir -p $(workspaces.results.path)/dockerfile-lint
@@ -6171,6 +6360,9 @@ spec:
             - ALL
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "300m", memory: "512Mi"}
+        limits:   {cpu: "1500m", memory: "2Gi"}
       script: |
         #!/bin/sh
         set -e
@@ -6309,6 +6501,9 @@ spec:
             - ALL
         seccompProfile:
           type: RuntimeDefault
+      computeResources:
+        requests: {cpu: "200m", memory: "256Mi"}
+        limits:   {cpu: "1000m", memory: "1Gi"}
       volumeMounts:
         - name: cosign-keys
           mountPath: /cosign-keys
@@ -7562,12 +7757,67 @@ spec:
 
         all_ai_findings.sort(key=lambda f: SEV_ORDER.get(f.get("severity","UNKNOWN"),5))
 
-        #  Aggregate counts from ALL categories 
+        #  Filter out app-suppressed findings (false positives / accepted risk)
+        # so they stop counting toward the risk grade/gate on every run -- see
+        # gitops_shared/state_suppressions.py. Best-effort fetch: if the operator is
+        # unreachable, nothing gets suppressed rather than the whole aggregate
+        # failing (same fail-open philosophy as the failure-context fetch above).
+        suppressed_keys = set()
+        try:
+            # /pipelines/{run_id}/suppressions, not /apps/{app_name}/suppressions --
+            # this script's only credential is its own per-run callback token (see
+            # auth/bearer.py's _RUN_TOKEN_ALLOWED_ROUTES), which only ever matches a
+            # route keyed on run_id; an app_name-only path always 401s here (found
+            # live -- the exact same token succeeds on the ai-report POST below,
+            # which IS run_id-keyed).
+            _req = urllib.request.Request(
+                f"{OPERATOR}/api/v1/pipelines/{RUN_ID}/suppressions",
+                headers={"Authorization": f"Bearer {API_TOKEN}"},
+                method="GET",
+            )
+            with urllib.request.urlopen(_req, timeout=15) as _r:
+                suppressed_keys = set(json.loads(_r.read()).get("keys", []))
+        except Exception as e:
+            print(f"suppressions fetch (non-fatal): {e}")
+
+        def _suppr_normalize_location(location):
+            # Mirrors gitops_shared/state_findings.py::_normalize_location -- this
+            # Tekton script is self-contained (concatenated at apply-time, no import
+            # of the operator's own Python package), so the identity logic is
+            # duplicated here rather than shared. Keep in sync with that file if the
+            # key scheme ever changes.
+            loc = location.split(":")[-1] if ":" in location else location
+            return loc.split("@")[0].lower().strip()
+
+        def _suppr_finding_key(f):
+            cve = (f.get("cve") or "").strip().upper()
+            if cve:
+                return f"cve:{cve}:{_suppr_normalize_location(f.get('location', ''))}"
+            tool     = (f.get("tool") or "").strip().lower()
+            location = (f.get("location") or "").strip().lower()
+            title    = (f.get("title") or "").strip().lower()[:80]
+            return f"{tool}:{location}:{title}"
+
+        if suppressed_keys:
+            _before = len(all_raw_findings)
+            all_raw_findings = [f for f in all_raw_findings if _suppr_finding_key(f) not in suppressed_keys]
+            all_ai_findings  = [f for f in all_ai_findings  if _suppr_finding_key(f) not in suppressed_keys]
+            suppressed_count = _before - len(all_raw_findings)
+            if suppressed_count:
+                print(f"Suppressed {suppressed_count} finding(s) per app suppression list "
+                      f"({len(suppressed_keys)} active key(s))")
+        else:
+            suppressed_count = 0
+
+        #  Aggregate counts -- recomputed from the (post-suppression) merged raw
+        # finding list rather than summed from each category's own self-reported
+        # critical/high/medium/low (which were computed before suppression could be
+        # applied and would otherwise silently ignore it).
         total_counts = {
-            "critical": sum(c.get("critical",0) for c in categories.values()),
-            "high":     sum(c.get("high",0)     for c in categories.values()),
-            "medium":   sum(c.get("medium",0)   for c in categories.values()),
-            "low":      sum(c.get("low",0)       for c in categories.values()),
+            "critical": sum(1 for f in all_raw_findings if (f.get("severity") or "").upper() == "CRITICAL"),
+            "high":     sum(1 for f in all_raw_findings if (f.get("severity") or "").upper() == "HIGH"),
+            "medium":   sum(1 for f in all_raw_findings if (f.get("severity") or "").upper() == "MEDIUM"),
+            "low":      sum(1 for f in all_raw_findings if (f.get("severity") or "").upper() == "LOW"),
         }
         tests_cat = categories.get("tests", {})
         test_summary = tests_cat.get("test_summary", {"passed":0,"failed":0,"coverage":0.0,"failures":[]})
@@ -7590,17 +7840,40 @@ spec:
         except Exception as e:
             print(f"failure-context fetch (non-fatal): {e}")
 
-        #  Risk grade 
-        def compute_risk_grade(critical, high, medium, tests_failed):
+        #  Risk grade
+        # build_failed/incomplete_scan are also the two signals compute_verdict()
+        # uses beyond raw counts -- previously this function only took the count
+        # args, so a pipeline where compile failed (build_failed=True, verdict
+        # correctly DO_NOT_PROCEED) but no scan category happened to report a
+        # critical/high/failed-test count could still compute risk_grade="A": the
+        # two "coordinating" computations were reading disjoint signal sets. Found
+        # by tracing why the grade badge and verdict banner (rendered right next to
+        # each other in ai_report_header.html) could show a green "A" beside a red
+        # "Not recommended to proceed" on the exact same report.
+        def compute_risk_grade(critical, high, medium, tests_failed, build_failed=False, incomplete_scan=False):
+            if build_failed:
+                # Nothing meaningful to grade when the build itself never produced a
+                # working artifact -- same severity floor as the verdict's own
+                # build_failed branch, not whatever the (likely all-zero, since
+                # tests never ran) finding counts alone would compute.
+                return "F"
             if critical > 0:
-                return "F" if (critical >= 3 or tests_failed > 0) else "D"
-            if high > 0:
-                return "C" if high >= 3 else "B"
-            if medium > 3:
+                grade = "F" if (critical >= 3 or tests_failed > 0) else "D"
+            elif high > 0:
+                grade = "C" if high >= 3 else "B"
+            elif medium > 3:
+                grade = "C"
+            elif medium > 0:
+                grade = "B"
+            else:
+                grade = "A"
+            if incomplete_scan and grade == "A":
+                # One or more categories never actually ran (crashed/OOMKilled
+                # sub-task) -- an "A" here is indistinguishable from a genuinely
+                # clean scan, so cap it the same way an incomplete scan already caps
+                # the verdict at PROCEED_WITH_CAUTION instead of PROCEED.
                 return "C"
-            if medium > 0:
-                return "B"
-            return "A"
+            return grade
 
         def compute_verdict(critical, high, medium, tests_failed, build_failed, incomplete_scan):
             if build_failed or critical > 0 or tests_failed > 0:
@@ -7612,12 +7885,14 @@ spec:
         build_failed    = len(pipeline_failures) > 0
         incomplete_scan = any(c.get("ran") is False for c in categories.values())
         risk_grade      = compute_risk_grade(total_counts["critical"], total_counts["high"],
-                                             total_counts["medium"], total_counts["tests_failed"])
+                                             total_counts["medium"], total_counts["tests_failed"],
+                                             build_failed, incomplete_scan)
         verdict         = compute_verdict(total_counts["critical"], total_counts["high"],
                                           total_counts["medium"], total_counts["tests_failed"],
                                           build_failed, incomplete_scan)
 
-        #  Call AI for synthesis (cheap  only compact summaries) 
+        #  Call AI for synthesis (cheap  only compact summaries, plus a few
+        # finding names+locations per category -- see note below)
         cat_summary_lines = []
         for cat, data in categories.items():
             if data.get("ran", False):
@@ -7626,6 +7901,19 @@ spec:
                     f"C={data.get('critical',0)} H={data.get('high',0)} "
                     f"M={data.get('medium',0)} L={data.get('low',0)}  {data.get('summary','')}"
                 )
+                # Top 3 findings by severity, name+location only -- the aggregate
+                # prompt (aggregate-rules.txt) explicitly asks for cross-category
+                # correlation like "a leaked credential for a service also reachable
+                # via an injection flaw", which needs something to actually match
+                # locations/components against. A count + 1-3 sentence summary alone
+                # can't support that -- this stays small (<=3 short lines per
+                # category) to keep the "cheap, compact" token budget this call was
+                # built around (see ai_analysis_tpm_fix in project history).
+                for f in (data.get("findings") or [])[:3]:
+                    title = (f.get("title") or "")[:80]
+                    loc   = (f.get("location") or "")[:80]
+                    if title:
+                        cat_summary_lines.append(f"    - {title}" + (f" @ {loc}" if loc else ""))
         cat_block = "\n".join(cat_summary_lines) or "  No category results available."
 
         failure_block = ""
@@ -7955,6 +8243,7 @@ spec:
             "pipelineFailureAnalysis": pfa,
             "categoryAnalysis":       category_analysis,
             'scanGaps':               scan_gaps,
+            "suppressedCount":        suppressed_count,
         }
 
         #  Post to operator  retry with backoff 
@@ -8153,6 +8442,44 @@ spec:
                         "cve": "", "fix_version": ""})
             except Exception as e:
                 print(f"Hadolint parse: {e}")
+
+        # "" Any other *.sarif in image-scan/ -- generic ingestion for admin-
+        # registered custom scanners (see gitops_shared/db/scanner_registry_store.py).
+        # Trivy/Grype are parsed from their own native JSON above (richer than SARIF),
+        # so this is purely additive for a third-party image scanner with no
+        # platform-specific parser -- same mechanism analyze-sast.py's cppcheck
+        # integration already relies on: write valid SARIF, get picked up for free.
+        # trivy.sarif is skipped -- scan-trivy-task.yaml writes both trivy.json (already
+        # parsed above) and trivy.sarif for the same scan; ingesting both would double-count.
+        _CVE_RE = re.compile(r"^CVE-\d{4}-\d+$", re.IGNORECASE)
+        image_scan_dir = SCAN_DIR / "image-scan"
+        if image_scan_dir.exists():
+            for extra_sarif in image_scan_dir.glob("*.sarif"):
+                if extra_sarif.name == "trivy.sarif":
+                    continue
+                ran = True
+                try:
+                    d = json.loads(extra_sarif.read_text())
+                    for run in d.get("runs", []):
+                        rules = {r["id"]: r for r in run.get("tool", {}).get("driver", {}).get("rules", [])}
+                        for result in run.get("results", []):
+                            rid  = result.get("ruleId", "?")
+                            rule = rules.get(rid, {})
+                            locs = result.get("locations", [])
+                            loc  = ""
+                            if locs:
+                                pl  = locs[0].get("physicalLocation", {})
+                                uri = pl.get("artifactLocation", {}).get("uri", "?")
+                                ln  = pl.get("region", {}).get("startLine", "")
+                                loc = f"{uri}:{ln}" if ln else uri
+                            sev = {"error":"HIGH","warning":"MEDIUM","note":"LOW","none":"INFO"}.get(
+                                result.get("level","warning").lower(), "MEDIUM").upper()
+                            cve = rid if _CVE_RE.match(rid) else ""
+                            findings.append({"tool": extra_sarif.stem, "severity": sev,
+                                "title": rule.get("shortDescription", {}).get("text", rid)[:120],
+                                "location": loc, "cve": cve, "fix_version": ""})
+                except Exception as e:
+                    print(f"SARIF parse {extra_sarif}: {e}")
 
         # "" SBOM """"""""""""""""""""""""""""""""""""""""""""""
         # Full CycloneDX JSON is kept (sbom_raw) so it survives past this pod's
@@ -8923,7 +9250,47 @@ spec:
             except Exception as e:
                 print(f"OSV SARIF parse: {e}")
 
-        #  OWASP Dependency-Check JSON 
+        # "" Any other *.sarif in sca/ -- generic ingestion for admin-registered
+        # custom scanners (see gitops_shared/db/scanner_registry_store.py). Same
+        # cve-extraction shape as the OSV block above (a SARIF ruleId that happens to
+        # be a CVE ID is recognized as one; anything else is left blank rather than
+        # guessed at) so a customer's own SCA tool's findings still grade/dedupe
+        # consistently with the built-in ones. osv.sarif is skipped -- already
+        # parsed above (with fix-version cross-referencing this generic path can't
+        # do), would otherwise double-count.
+        sca_dir = SCAN_DIR / "sca"
+        custom_sarif_ran = False
+        if sca_dir.exists():
+            for extra_sarif in sca_dir.glob("*.sarif"):
+                if extra_sarif.name == "osv.sarif":
+                    continue
+                custom_sarif_ran = True
+                try:
+                    d = json.loads(extra_sarif.read_text())
+                    for run in d.get("runs", []):
+                        rules = {r["id"]: r for r in run.get("tool", {}).get("driver", {}).get("rules", [])}
+                        for result in run.get("results", []):
+                            rid  = result.get("ruleId", "?")
+                            rule = rules.get(rid, {})
+                            locs = result.get("locations", [])
+                            loc  = ""
+                            if locs:
+                                pl  = locs[0].get("physicalLocation", {})
+                                uri = pl.get("artifactLocation", {}).get("uri", "?")
+                                ln  = pl.get("region", {}).get("startLine", "")
+                                loc = f"{uri}:{ln}" if ln else uri
+                            sev = {"error":"HIGH","warning":"MEDIUM","note":"LOW","none":"INFO"}.get(
+                                result.get("level","warning").lower(), "MEDIUM").upper()
+                            cve = rid if CVE_RE.match(rid) else ""
+                            findings.append({"tool": extra_sarif.stem, "severity": sev,
+                                "title": rule.get("shortDescription", {}).get("text", rid)[:120],
+                                "location": loc, "cve": cve, "fix_version": ""})
+                except Exception as e:
+                    print(f"SARIF parse {extra_sarif}: {e}")
+        if custom_sarif_ran:
+            ran = True
+
+        #  OWASP Dependency-Check JSON
         owasp_json   = SCAN_DIR / 'sca' / 'dependency-check-report.json'
         owasp_status = SCAN_DIR / 'sca' / 'owasp-status.json'
         owasp_skip_reason = ''
@@ -9291,13 +9658,28 @@ spec:
             except Exception as e:
                 print(f"TruffleHog parse: {e}")
 
+        # "" Any other *.sarif in secrets/ -- generic ingestion for admin-registered
+        # custom scanners (see gitops_shared/db/scanner_registry_store.py). Same
+        # mechanism analyze-sast.py already uses for cppcheck: a tool with no
+        # platform-specific parser just needs to write valid SARIF into the right
+        # category subdirectory, tool name taken from the filename stem. gitleaks.sarif
+        # is skipped -- already parsed above, would otherwise double-count.
+        secrets_dir = SCAN_DIR / "secrets"
+        custom_sarif_ran = False
+        if secrets_dir.exists():
+            for extra_sarif in secrets_dir.glob("*.sarif"):
+                if extra_sarif.name == "gitleaks.sarif":
+                    continue
+                parse_sarif(extra_sarif, extra_sarif.stem)
+                custom_sarif_ran = True  # a genuinely clean scan still counts as "ran"
+
         SEV_ORDER = {"CRITICAL":0,"HIGH":1,"MEDIUM":2,"LOW":3,"INFO":4,"UNKNOWN":5}
         findings.sort(key=lambda f: SEV_ORDER.get(f.get("severity","UNKNOWN"), 5))
         counts = {s.lower(): sum(1 for f in findings if f.get("severity") == s)
                   for s in ("CRITICAL","HIGH","MEDIUM","LOW")}
         print(f"Secrets findings: {len(findings)} total, {counts}")
 
-        ran = sarif.exists() or th.exists()
+        ran = sarif.exists() or th.exists() or custom_sarif_ran
 
         # "" Secret-injection-ladder rung heuristic (fallback when AI unavailable) ""
         # Rung 0=hard-coded, 1=build-time bake, 2=deploy-time render (lands in git),

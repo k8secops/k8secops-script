@@ -22,6 +22,7 @@ The script collects all inputs **before** making any changes to your cluster:
 |--------|----------|-------|
 | Cluster confirmation | ✓ | Shows current kubectl context, asks `y/N` |
 | UI admin password | ✓ | Min 8 characters. Printed at the end. |
+| Database | ✓ | Managed PostgreSQL you already have (recommended for production) or in-cluster PostgreSQL (dev/trial). See [Database](#database-managed-vs-in-cluster) below. |
 | Docker Hub username | Optional | Recommended. Prevents image pull rate limits during pipelines. |
 | Docker Hub access token | Optional | Required if username is provided. |
 
@@ -30,6 +31,27 @@ After collecting inputs the script runs unattended through all install steps.
 ---
 
 ## Before You Install — Get Your Keys
+
+### Database (managed vs in-cluster)
+
+The installer asks which database to use:
+
+1. **A managed PostgreSQL you already have** (RDS, Cloud SQL, Azure Database for
+   PostgreSQL, ...) — **recommended for production**. HA, automated backups, and
+   patching become your provider's job instead of this chart's. Only
+   **PostgreSQL 13–16** is supported (tested against 16); the installer connects
+   and verifies the version before installing anything, and refuses to proceed
+   against an unsupported version. Have the host, port, database name, username,
+   and password ready — the installer prompts for each.
+2. **In-cluster PostgreSQL** (the installer's default if you skip option 1) —
+   fine for development/trial use, or as a last resort where no managed option
+   exists. No built-in HA; backups are a nightly `pg_dump` CronJob rather than a
+   provider-managed process.
+
+> If your managed database is only reachable from inside the cluster (a common
+> RDS/Cloud SQL private-subnet setup), the installer's version check will fail
+> to connect from wherever you're running it. Re-run with
+> `SKIP_DB_VERSION_CHECK=true` to skip verification in that case.
 
 ### Docker Hub Access Token (free account — recommended)
 
@@ -58,6 +80,17 @@ Set environment variables to skip all prompts:
 export UI_ADMIN_PASSWORD="MySecurePassword123"
 export DOCKERHUB_USERNAME="myusername"
 export DOCKERHUB_TOKEN="dckr_pat_xxxxxxxxxx"
+
+# Managed PostgreSQL (recommended) -- omit this whole block to get in-cluster
+# PostgreSQL instead (DB_MODE defaults to internal when unset).
+export DB_MODE="external"
+export DB_EXT_HOST="mydb.xxxxxxxxxx.us-east-1.rds.amazonaws.com"
+export DB_EXT_PORT="5432"                # optional, defaults to 5432
+export DB_EXT_NAME="gitops_platform"     # optional, defaults to gitops_platform
+export DB_EXT_USERNAME="gitops"
+export DB_EXT_PASSWORD="MyDbPassword123"
+export DB_EXT_SSLMODE="require"          # optional, defaults to require
+# export SKIP_DB_VERSION_CHECK="true"    # only if the DB isn't reachable from here
 
 curl -sfL https://raw.githubusercontent.com/k8secops/k8secops-script/main/customer-install.sh | bash
 ```

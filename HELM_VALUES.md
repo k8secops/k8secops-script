@@ -392,14 +392,32 @@ make apply-platform
 
 ### External (managed) PostgreSQL
 
+**Recommended for production.** The in-cluster PostgreSQL pod (`database.mode=internal`,
+the default) is meant for development/trial use, or as a last resort where no managed
+option exists — no built-in HA, and backups/patching are this chart's own nightly
+`pg_dump` CronJob rather than a provider-managed process. A managed provider (RDS, Cloud
+SQL, Azure Database for PostgreSQL, ...) makes HA, automated backups, and patching the
+provider's job instead.
+
+Only **PostgreSQL 13–16** is supported (tested against 16, the same version the internal
+mode ships). `kgate install --external-db` and `scripts/customer-install.sh` both connect
+and verify this before installing anything; a plain `helm install`/`upgrade` does not, so
+verify the version yourself first if using Helm directly.
+
 ```bash
 helm upgrade gitops-platform oci://registry-1.docker.io/k8secops/gitops-platform \
   --namespace gitops-core --reuse-values \
   --set database.mode=external \
   --set database.external.host=<rds-or-cloudsql-host> \
   --set database.external.username=<user> \
-  --set database.external.password=<password>
+  --set database.external.password=<password> \
+  --set database.external.sslmode=require
 ```
+
+`database.external.sslmode` defaults to `require` (encrypted, no certificate
+verification) — managed providers generally require or strongly recommend TLS.
+`verify-ca`/`verify-full` need the provider's CA bundle mounted into the operator pod,
+which this chart does not wire up automatically.
 
 ### Exposing via Ingress instead of NodePort
 
