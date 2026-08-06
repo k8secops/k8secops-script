@@ -22,9 +22,9 @@ The script collects all inputs **before** making any changes to your cluster:
 |--------|----------|-------|
 | Cluster confirmation | ✓ | Shows current kubectl context, asks `y/N` |
 | UI admin password | ✓ | Min 8 characters. Printed at the end. |
+| Registry credentials | Optional | Docker Hub username + token (recommended, prevents pull rate limits), a private registry (type `private` at the prompt to supply server/username/token instead), or skip entirely for anonymous pulls. |
+| NVD API key | Optional | Speeds up the first OWASP dependency-scan database sync. See [NVD API Key](#nvd-api-key-optional--speeds-up-dependency-scanning) below. |
 | Database | ✓ | Managed PostgreSQL you already have (recommended for production) or in-cluster PostgreSQL (dev/trial). See [Database](#database-managed-vs-in-cluster) below. |
-| Docker Hub username | Optional | Recommended. Prevents image pull rate limits during pipelines. |
-| Docker Hub access token | Optional | Required if username is provided. |
 
 After collecting inputs the script runs unattended through all install steps.
 
@@ -70,6 +70,20 @@ Providing a Docker Hub account raises this to **200 authenticated pulls per 6 ho
 
 > A **free Docker Hub account** is sufficient. No paid plan is needed.
 
+### NVD API Key (optional — speeds up dependency scanning)
+
+The **OWASP Dependency-Check** scanner (one of the SCA tools in your pipeline — see [Security scanners](#security-scanners-30) below) needs a local copy of NIST's National Vulnerability Database (NVD) to check your dependencies against. That copy is kept warm by a scheduled background job, `owasp-db-refresh`, running once a day by default (`0 3 * * *`, 03:00) in `gitops-tooling` — it isn't fetched fresh per pipeline run.
+
+**Why you need it**: NIST rate-limits *unauthenticated* requests to the NVD API much more strictly than authenticated ones. Without a key, that daily refresh takes **30–60 minutes**; with a free key, **~5 minutes**. You'll notice the difference right after a fresh install — the installer seeds this database for the first time during Step 5.5, and without a key it keeps running in the background well after the install script finishes (the installer prints exactly this at the end — see [After Install](#after-install--what-you-see)). If your very first pipeline run's OWASP Dependency-Check stage skips with a "NVD database not available" note, the seed job simply hasn't finished yet — it isn't a broken install, and OSV-Scanner (the other SCA tool) still covers you in the meantime.
+
+**How to get a free key:**
+
+1. Go to **[nvd.nist.gov/developers/request-an-api-key](https://nvd.nist.gov/developers/request-an-api-key)**
+2. Fill in the short form (name, organization, email) and submit
+3. The key arrives by email, usually within a few minutes
+
+**When to add it**: paste it in at the installer's prompt during a fresh install (or set `NVD_API_KEY` for a non-interactive install — see below). Already installed without one? No need to reinstall — an admin can add or change it anytime from **Admin → Settings → "Dependency scanning (OWASP)"** in the platform UI, which also lets you change the `0 3 * * *` refresh schedule itself. This only affects the background refresh job — it never blocks or slows down an actual pipeline run.
+
 ---
 
 ## Non-Interactive Install (CI/CD, Automation)
@@ -80,6 +94,17 @@ Set environment variables to skip all prompts:
 export UI_ADMIN_PASSWORD="MySecurePassword123"
 export DOCKERHUB_USERNAME="myusername"
 export DOCKERHUB_TOKEN="dckr_pat_xxxxxxxxxx"
+
+# Using your own private registry instead of Docker Hub? Set these three
+# instead of DOCKERHUB_USERNAME/DOCKERHUB_TOKEN above (mirror the scanner
+# images there first -- see "make mirror-images" in HELM_VALUES.md):
+# export PRIVATE_REGISTRY_SERVER="registry.company.com"
+# export PRIVATE_REGISTRY_USERNAME="myusername"
+# export PRIVATE_REGISTRY_TOKEN="mytoken"
+
+# Optional -- speeds up the OWASP dependency-scan database refresh from
+# 30-60 min to ~5 min. Free key: nvd.nist.gov/developers/request-an-api-key
+# export NVD_API_KEY="your-nvd-api-key"
 
 # Managed PostgreSQL (recommended) -- omit this whole block to get in-cluster
 # PostgreSQL instead (DB_MODE defaults to internal when unset).
@@ -224,9 +249,9 @@ The AI stage is optional per app, and can be scoped to specific branches (e.g. o
 | Category | Tools |
 |----------|-------|
 | **Secrets** | Gitleaks, TruffleHog (live credential verification) |
-| **SAST** | Semgrep, Bearer, SonarQube CE, Bandit, gosec, SpotBugs, ESLint Security, Roslyn |
+| **SAST** | Semgrep, Bearer, SonarQube CE, Bandit, gosec, SpotBugs, ESLint Security, Roslyn, clippy+cargo-audit (Rust), cppcheck (C/C++) |
 | **SCA** | OSV-Scanner, OWASP Dependency-Check |
-| **IaC** | Checkov (Dockerfile, Terraform, Helm, K8s manifests) |
+| **IaC** | Checkov (Dockerfile, Terraform, Helm, K8s manifests), tflint (Terraform HCL linting) |
 | **Image** | Trivy (CVE + licence + misconfig), Grype, Syft SBOM, ClamAV malware, Hadolint |
 | **Supply chain** | cosign image signing, CycloneDX SBOM per build |
 
@@ -242,13 +267,33 @@ When enabled, the AI analyses all findings after every scan and produces a **ris
 | D | Significant vulnerabilities — strong review required |
 | F | Critical issues — AI recommends not proceeding |
 
+### Works with or without AI
+
+AI is optional per app (`spec.ai.enabled`, on by default, editable anytime), and can even be scoped to specific branches (e.g. only `main`/`release`, skipping `dev` to save API cost). **Every scanner still runs in full either way** — nothing about scan coverage, the human gate, or pipeline correctness depends on AI being on. With AI off (or if an AI call fails), the platform falls back to a deterministic, non-AI report built directly from the raw scanner output — so you always get a risk grade and a findings list, never a blank report.
+
+What you specifically miss without AI:
+
+- **AI-authored executive summary** and per-finding recommendation/fix guidance — without it you see the raw finding as reported by the tool.
+- **Exploitability-based prioritization and cross-tool deduplication** — e.g. the same CVE reported by both Trivy and Grype is merged and ranked by real-world risk, not just sorted by severity label.
+- **The AI chat** on a run's detail page (ask questions about findings, get review guidance) — it requires the same AI credentials and returns an error without them.
+
+Every finding and report is tagged `ai_generated: true` or `false` so it's never ambiguous which kind of analysis you're looking at, whether AI is on, off, or just failed for one run.
+
 ### Human gate
 
-**No image reaches the registry without a human decision.** The reviewer sees the full AI report, risk grade, all findings, and test results before approving or rejecting. Every decision is logged.
+**No image reaches the registry without a human decision** — with one narrow, explicit exception: a scheduled (cron-triggered) run auto-approves if `spec.schedule.autoApprove.enabled` is set, the AI risk grade clears the configured minimum, and there are zero critical/high findings. Every other run, including every manually- or webhook-triggered one, goes through the same mandatory human gate: the reviewer sees the full AI report, risk grade, all findings, and test results before approving or rejecting. Every decision (or auto-approval) is logged.
 
 ### Preparing your app repo
 
 Onboarding a Java/.NET/Python/Node/React/Next.js/Go/Rust/TypeScript/Terraform repo? See **[NOTES_TO_DEVELOPERS.md](NOTES_TO_DEVELOPERS.md)** for exactly what each language's pipeline expects — build tool/file conventions, how the unit-test stage invokes your test runner and what coverage format it expects, and the common per-language pitfalls (e.g. .NET's required app/test-project split, Rust's no-coverage-collected behavior).
+
+### Team access (Groups)
+
+Admins can create named **Groups** (Admin → Groups) that bundle a set of apps — each with its own role (developer/reviewer) — together with member users. Members inherit whatever app access their group grants, so a team lead adds people to the group once instead of wiring up per-app permissions by hand. A new app can be assigned to a Group directly during onboarding.
+
+### Bring your own scanner
+
+Already pay for a licensed scanner (Coverity, Snyk, or an internal tool)? Admins can register it once (Admin → Scanners) — container image, category (secrets/SAST/SCA/image-scan), and the shell command to run it — and assign it to specific apps, groups, or all apps. Registered scanners run **alongside** the 30+ free built-in tools below, never replacing them.
 
 ---
 
@@ -283,33 +328,79 @@ curl -sfL https://raw.githubusercontent.com/k8secops/k8secops-script/main/custom
 | SonarQube CE | `gitops-tooling` | In-cluster SAST and code quality analysis |
 | PostgreSQL | `gitops-db` | Pipeline history, AI reports, audit trail |
 | Sealed Secrets | `gitops-tooling` | Encrypted Kubernetes secrets at rest |
+| vulndb-cache-server + trivy-server | `gitops-tooling` | Persistent OWASP/Grype/Trivy vulnerability-DB caches, refreshed by CronJobs |
+| package-cache-server | `gitops-tooling` | On-demand proxy-cache for Maven/Go/npm/Cargo dependency downloads, enabled by default |
 | 30+ scanner tasks | `gitops-core` | Pre-configured, zero setup required -- copied into each run's own ephemeral namespace at trigger time |
 
 ---
 
 ## Images
 
-All scanner images are hosted on Docker Hub under `k8secops/k8secops`:
+Every image the platform pulls under the `k8secops/k8secops` Docker Hub repository is **public** — no login required, verified by an anonymous pull of each tag below:
 
 **[hub.docker.com/r/k8secops/k8secops](https://hub.docker.com/r/k8secops/k8secops)**
 
 > **Docker Hub rate limits apply to anonymous pulls** (100 per 6 hours per node IP).  
-> Provide your Docker Hub credentials during install to avoid pipeline failures.  
-> See [Docker Hub Access Token](#2-docker-hub-access-token-free-account--recommended) above.
+> Provide Docker Hub or private-registry credentials during install to avoid pipeline failures under load.  
+> See [Registry credentials](#docker-hub-access-token-free-account--recommended) above.
 
-| Tag | Description |
-|-----|-------------|
-| `gitops-operator-1.0.0` | Platform operator + UI |
+### Platform images (always pulled)
+
+| Tag | Used for |
+|-----|----------|
+| `gitops-operator-1.0.0` | Operator + controller process (UI, API, Kopf, scheduler) |
+| `gitops-builder-1.0.0` | Kaniko image builder (Alpine-based, no external registry dependency) |
+| `kubectl-1.29` | Helm chart's own pre-install/pre-delete hook Jobs |
+| `gitops-webhook-api-1.0.0` | Only if `webhookApi.enabled=true` (default `false`) |
+
+### Security scanner images (always pulled — every pipeline run, regardless of app language)
+
+| Tag | Tool |
+|-----|------|
 | `gitleaks-v8.18.4` | Secrets scanner |
 | `trufflehog-3.95.5` | Verified secrets scanner |
 | `semgrep-1.77.0` | SAST (2,000+ rules) |
-| `trivy-0.54.1` | CVE + licence + misconfiguration scanner |
-| `grype-v0.80.0` | CVE scanner (Anchore DB) |
+| `bearer-v1.44.0` | SAST (data-flow/privacy-focused) |
+| `sonar-scanner-cli-5.0.1` | SonarQube scan trigger |
+| `checkov-3.2.0` | Dockerfile/IaC scanner |
+| `tflint-v0.54.0` | Terraform HCL linting |
+| `owasp-dependency-check-10.0.4` | SCA — dependency CVEs |
+| `osv-scanner-v1.8.5` | SCA — dependency CVEs |
+| `hadolint-v2.12.0-debian` | Dockerfile linting |
+| `trivy-0.54.1` | Image CVE + licence + misconfig scanner |
+| `grype-v0.80.0` | Image CVE scanner (Anchore DB) |
 | `syft-v1.9.0` | SBOM generator (CycloneDX) |
 | `clamav-stable` | Malware scanner |
+| `skopeo-v1.16.0` | Image push |
 | `cosign-2.2.4` | Image signing |
-| `python-3.12-slim` | Runtime for AI analysis |
-| *...and more* | [See full list →](https://hub.docker.com/r/k8secops/k8secops/tags) |
+| `git-v2.45.2` | Repo clone |
+| `alpine-3.20` | Shared shell/utility steps |
+
+### Language runtime images (only the ones matching the languages you actually onboard)
+
+| Tag(s) | Language |
+|--------|----------|
+| `dotnet-sdk-6.0`, `dotnet-sdk-8.0`, `dotnet-sdk-9.0` | .NET |
+| `golang-1.21-alpine`, `golang-1.22-alpine`, `golang-1.23-alpine` | Go |
+| `maven-3.9-eclipse-temurin-17`, `maven-3.9-eclipse-temurin-21` | Java (Maven/Gradle/Ant) |
+| `node-18-alpine`, `node-20-alpine`, `node-22-alpine` | Node.js / React / Next.js / TypeScript |
+| `python-3.10-slim`, `python-3.11-slim`, `python-3.12-slim`, `python-3.13-slim` | Python (also used at runtime for AI analysis) |
+| `rust-1.75-slim`, `rust-1.78-slim`, `rust-1.81-slim` | Rust |
+| `gcc-12`, `gcc-13`, `gcc-14` | C/C++ |
+| `cppcheck-2.14.2` | C/C++ SAST |
+
+### Official upstream images (not hosted by k8secops — already public on their own repos, no action needed)
+
+| Image | Used for |
+|-------|----------|
+| `sonarqube:lts-community` | SonarQube CE |
+| `postgres:16` | In-cluster PostgreSQL (default; not pulled if you use a managed external DB) |
+| `nginx:1.27-alpine` | `vulndb-cache-server` / `package-cache-server` |
+| Tekton Pipelines v1.13.0 images | Pulled from `gcr.io/tekton-releases` during Step 2 of the installer |
+| Sealed Secrets controller | Pulled by the `sealed-secrets` Helm subchart during Step 3 |
+| `bitnami/kubectl` | PipelineRun pruner CronJob |
+
+*(Full tag list, including every pinned version: [hub.docker.com/r/k8secops/k8secops/tags](https://hub.docker.com/r/k8secops/k8secops/tags) — a couple of extra tags there, e.g. `postgres-16`/`sonarqube-lts-community`, are pre-mirrored copies of the upstream images above for the private-registry mirroring workflow; the default install pulls the upstream images directly and never needs them.)*
 
 ---
 
@@ -323,4 +414,4 @@ All scanner images are hosted on Docker Hub under `k8secops/k8secops`:
 
 ---
 
-*k8secops-gate v1.0.0 · [hub.docker.com/r/k8secops/k8secops](https://hub.docker.com/r/k8secops/k8secops)*
+*k8secops-gate v1.0.1 · [hub.docker.com/r/k8secops/k8secops](https://hub.docker.com/r/k8secops/k8secops)*
