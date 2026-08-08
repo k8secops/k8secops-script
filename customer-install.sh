@@ -33,7 +33,7 @@ TEKTON_TASKS_URL="https://raw.githubusercontent.com/k8secops/k8secops-script/v${
 
 # ── Versions ─────────────────────────────────────────────────────────────────
 TEKTON_VERSION="v1.13.0"
-SEALED_SECRETS_VERSION="2.15.0"
+SEALED_SECRETS_VERSION="2.19.1"
 
 # ── Namespace names ──────────────────────────────────────────────────────────
 # No shared/default build namespace anymore -- every pipeline run gets its
@@ -347,10 +347,7 @@ info "Tekton init-container memory limits raised (prepare: 512Mi)"
 # ── Step 3: Sealed Secrets ────────────────────────────────────────────────────
 section "Step 3 — Sealed Secrets ${SEALED_SECRETS_VERSION}"
 
-helm repo add sealed-secrets https://bitnami-labs.github.io/sealed-secrets >/dev/null 2>&1 || true
-helm repo update >/dev/null 2>&1
-
-helm upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
+helm upgrade --install sealed-secrets oci://registry-1.docker.io/bitnamicharts/sealed-secrets \
   --namespace "$NS_TOOLING" --create-namespace \
   --set fullnameOverride=sealed-secrets-controller \
   --version "$SEALED_SECRETS_VERSION" \
@@ -541,7 +538,7 @@ wait_ns() {
   while true; do
     lines=$(kubectl get pods -n "$ns" \
       --field-selector=status.phase!=Succeeded --no-headers 2>/dev/null || true)
-    total=$(echo "$lines" | grep -c . 2>/dev/null || echo 0)
+    total=$(echo "$lines" | grep -c .)
     ready=$(echo "$lines" | awk \
       '{split($2,a,"/"); if(a[1]==a[2] && a[1]!=0 && $3=="Running") c++} END{print c+0}')
     info "  ${ns}: ${ready}/${total} Ready"
