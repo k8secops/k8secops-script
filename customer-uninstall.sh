@@ -76,6 +76,15 @@ if kubectl get deployment "${HELM_RELEASE}-operator" -n "${NS_CORE}" &>/dev/null
   info "Operator scaled to 0."
 fi
 
+# webhook-api (enabled by default) owns the actual trigger/namespace-provisioning
+# logic -- the operator has none of it. Without scaling this down too, an
+# external git webhook arriving during cleanup could still successfully
+# trigger a new run right up until Step 2's helm uninstall removes it.
+if kubectl get deployment "${HELM_RELEASE}-webhook-api" -n "${NS_CORE}" &>/dev/null 2>&1; then
+  kubectl scale deployment "${HELM_RELEASE}-webhook-api" -n "${NS_CORE}" --replicas=0 &>/dev/null || true
+  info "webhook-api scaled to 0."
+fi
+
 # Cancel any running PipelineRuns so pods are cleaned up by Tekton. Every
 # run now executes in its own ephemeral namespace (not NS_TEKTON, which
 # hosts the Tekton controllers only), so this searches cluster-wide rather
