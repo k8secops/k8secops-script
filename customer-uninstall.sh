@@ -36,7 +36,29 @@ for arg in "$@"; do
   case "$arg" in
     --purge) PURGE=true ;;
     --help|-h)
-      sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      # Inlined rather than read back from "${BASH_SOURCE[0]}" -- this script's
+      # own documented usage is `curl ... | bash`, and BASH_SOURCE[0] is unset
+      # when running from stdin (confirmed live: --help itself crashed with
+      # "unbound variable" under that exact invocation).
+      cat <<'HELP'
+============================================================
+k8secops-gate — uninstaller
+
+Usage:
+  curl -sfL https://raw.githubusercontent.com/k8secops/k8secops-script/main/customer-uninstall.sh | bash
+  curl -sfL https://raw.githubusercontent.com/k8secops/k8secops-script/main/customer-uninstall.sh | bash -s -- --purge
+
+Default (no flags):
+  Removes the Helm release, Sealed Secrets, and per-app credentials.
+  Keeps namespaces and PostgreSQL data so you can reinstall cleanly.
+
+--purge:
+  Also removes namespaces, PostgreSQL PVCs (all history lost),
+  Tekton Pipelines, and cosign signing key.
+
+Requirements: kubectl, helm
+============================================================
+HELP
       exit 0 ;;
   esac
 done

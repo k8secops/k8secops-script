@@ -80,9 +80,13 @@ fi
 
 info "Using pod: ${OPERATOR_POD}"
 
-NEW_HASH=$(kubectl exec -n "${NS_OPERATOR}" "${OPERATOR_POD}" -- python3 -c "
-import hashlib, secrets
-pwd = '''${NEW_PASSWORD}'''
+# Password piped via stdin, not spliced into the Python source text -- a
+# password containing a quote character would otherwise break out of the
+# '''...''' literal (confirmed live: a trailing "'" alone raises a
+# SyntaxError, and adversarial input can go further than a crash).
+NEW_HASH=$(printf '%s' "${NEW_PASSWORD}" | kubectl exec -i -n "${NS_OPERATOR}" "${OPERATOR_POD}" -- python3 -c "
+import hashlib, secrets, sys
+pwd = sys.stdin.read()
 salt = secrets.token_hex(16)
 dk = hashlib.pbkdf2_hmac('sha256', pwd.encode(), salt.encode(), 600000)
 print(f'{salt}\${dk.hex()}')
@@ -108,10 +112,15 @@ fi
 
 info "Using pod: ${DB_POD}"
 
+# TARGET_USER passed as a psql variable (:'target_user' quotes it as a SQL
+# literal, escaping embedded quotes) instead of spliced into the SQL text --
+# unescaped interpolation here let "--username \"admin' OR '1'='1\"" match
+# and overwrite every row's pwd_hash, confirmed live.
 ROWS=$(kubectl exec -n gitops-db "${DB_POD}" -- \
-  psql -qtA -U "${DB_USER}" -d "${DB_NAME}" -c \
-  "UPDATE platform_users SET pwd_hash = '${NEW_HASH}' \
-   WHERE username = '${TARGET_USER}' RETURNING username;")
+  psql -qtA -U "${DB_USER}" -d "${DB_NAME}" \
+  -v new_hash="${NEW_HASH}" -v target_user="${TARGET_USER}" -c \
+  "UPDATE platform_users SET pwd_hash = :'new_hash' \
+   WHERE username = :'target_user' RETURNING username;")
 
 if [[ "$ROWS" == "$TARGET_USER" ]]; then
   info "Password updated for user '${TARGET_USER}'"
