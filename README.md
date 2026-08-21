@@ -351,7 +351,7 @@ Every image the platform pulls under the `k8secops/k8secops` Docker Hub reposito
 | `gitops-operator-1.0.0` | Operator + controller process (UI, API, Kopf, scheduler) |
 | `gitops-builder-1.0.0` | Kaniko image builder (Alpine-based, no external registry dependency) |
 | `kubectl-1.29` | Helm chart's own pre-install/pre-delete hook Jobs |
-| `gitops-webhook-api-1.0.0` | Only if `webhookApi.enabled=true` (default `false`) |
+| `gitops-webhook-api-1.0.0` | Required -- webhook ingestion and pipeline triggering live exclusively here (`webhookApi.enabled` defaults to `true`) |
 
 ### Security scanner images (always pulled — every pipeline run, regardless of app language)
 
@@ -414,4 +414,4 @@ Every image the platform pulls under the `k8secops/k8secops` Docker Hub reposito
 
 ---
 
-*k8secops-gate v1.0.1 · [hub.docker.com/r/k8secops/k8secops](https://hub.docker.com/r/k8secops/k8secops)*
+*k8secops-gate v1.0.0 · [hub.docker.com/r/k8secops/k8secops](https://hub.docker.com/r/k8secops/k8secops)*
