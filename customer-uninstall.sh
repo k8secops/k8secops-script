@@ -136,6 +136,27 @@ else
   info "Release not found -- skipping."
 fi
 
+# ── Step 2.5: Ephemeral run namespace cleanup (always, not just --purge) ─────
+# Step 1.5 scales the operator and webhook-api to 0 BEFORE cancelling any
+# still-active PipelineRuns. Namespace teardown (run_cleanup(), which deletes
+# a run's ephemeral {app}-{branch}-{run-id} namespace) is only ever triggered
+# by that run's own terminal-status callback reaching the operator/webhook-api
+# -- with both already scaled to 0 by the time the cancellation lands, that
+# callback has nothing to reach, and the namespace is never torn down. A
+# stuck ephemeral namespace at uninstall time is pure garbage (unlike
+# PostgreSQL data or the platform secrets below, it has no reinstall-
+# continuity value), so this sweep runs unconditionally in every uninstall,
+# not gated behind --purge the way removing real platform history is.
+section "Step 2.5 -- Removing any ephemeral run namespaces"
+EPHEMERAL_NS=$(kubectl get namespace -l gitops-platform.io/ephemeral-run-namespace=true \
+  -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+if [[ -n "$EPHEMERAL_NS" ]]; then
+  kubectl delete namespace $EPHEMERAL_NS --ignore-not-found 2>/dev/null || true
+  info "Ephemeral run namespaces deleted: ${EPHEMERAL_NS}"
+else
+  info "No leftover ephemeral run namespaces found."
+fi
+
 # ── Step 3: Sealed Secrets ────────────────────────────────────────────────────
 section "Step 3 -- Uninstalling Sealed Secrets"
 
@@ -213,16 +234,8 @@ if [[ "$PURGE" == "true" ]]; then
     --ignore-not-found 2>/dev/null || true
   info "Tekton removed."
 
-  # Every pipeline run gets its own ephemeral namespace (created/destroyed
-  # per-run by the operator, see gitops-platform.io/ephemeral-run-namespace
-  # label) -- with the operator itself being removed, nothing is left to
-  # clean up anything stuck at the moment of uninstall, so sweep them here.
-  EPHEMERAL_NS=$(kubectl get namespace -l gitops-platform.io/ephemeral-run-namespace=true \
-    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
-  if [[ -n "$EPHEMERAL_NS" ]]; then
-    kubectl delete namespace $EPHEMERAL_NS --ignore-not-found 2>/dev/null || true
-    info "Ephemeral run namespaces deleted: ${EPHEMERAL_NS}"
-  fi
+  # Ephemeral run namespaces are already swept unconditionally in Step 2.5,
+  # regardless of --purge -- nothing further to do for them here.
 
   kubectl delete namespace "${NS_CORE}" "${NS_TOOLING}" "${NS_DB}" "${NS_TEKTON}" \
     --ignore-not-found 2>/dev/null || true
