@@ -1016,6 +1016,18 @@ metadata:
     gitops-platform.io/stage: sast
 spec:
   description: "Semgrep SAST -- OSS rules, all languages, no token."
+  params:
+    - name: semgrep-ruleset
+      type: string
+      default: "auto"
+      description: >-
+        Passed straight through to semgrep's --config flag. "auto" (default)
+        fetches the current live ruleset from semgrep.dev on every run --
+        not reproducible run-to-run, but always current. Pin to a specific
+        registry ref (e.g. "r/2026.08.01", "p/ci") for reproducible findings
+        across runs of the same commit -- see the deployment-wide
+        SEMGREP_RULESET env var / values.yaml, which is where this default
+        actually gets overridden platform-wide (see config.py's own comment).
   workspaces:
     - name: source
     - name: results
@@ -1041,20 +1053,23 @@ spec:
         #!/bin/sh
         mkdir -p $(workspaces.results.path)/sast
         # No SEMGREP_APP_TOKEN -- uses free public rules
-        # --config auto fetches the current ruleset live from semgrep.dev's
-        # registry on every run -- the 1.77.0 image tag above
-        # pins the semgrep BINARY, not this. Two identical commits scanned
-        # on different days can produce different finding counts with no
-        # corresponding version bump anywhere in values.yaml. Deliberate,
-        # accepted tradeoff, not an oversight: pinning to a specific
-        # published ruleset (--config r/...) would make results
+        # $(params.semgrep-ruleset) defaults to "auto", which fetches the
+        # current ruleset live from semgrep.dev's registry on every run --
+        # the 1.77.0 image tag above pins the semgrep BINARY,
+        # not this. Two identical commits scanned on different days can
+        # produce different finding counts under the "auto" default, with
+        # no corresponding version bump anywhere in values.yaml. That
+        # default is a deliberate, accepted tradeoff, not an oversight:
+        # pinning to a specific published ruleset would make results
         # reproducible but freezes out new/updated rule coverage (new CVE
         # patterns, newly-added language support) until someone manually
         # bumps it -- for a SAST scanner specifically, staying current with
         # upstream's rule additions was judged more valuable than strict
-        # run-to-run reproducibility of finding counts.
+        # run-to-run reproducibility of finding counts, as the default.
+        # Deployments that need reproducibility instead (compliance,
+        # incident forensics) can override via SEMGREP_RULESET / values.yaml.
         semgrep \
-          --config auto \
+          --config "$(params.semgrep-ruleset)" \
           --sarif \
           --output $(workspaces.results.path)/sast/semgrep.sarif \
           --no-git-ignore \
