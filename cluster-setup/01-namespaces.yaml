@@ -1,0 +1,129 @@
+# GitOps Platform — Required Namespaces
+#
+# Core namespaces:
+#   gitops-core    — the platform operator (code we own)
+#   gitops-tooling — third-party services: SonarQube, Sealed Secrets, future tools
+#   tekton-pipelines — Tekton controllers (namespace is fixed by Tekton itself)
+#   gitops-db, staging, production, dev — shared/default namespaces, see below
+#
+# Pipeline execution itself has no namespace here at all -- every run gets
+# its own fresh, ephemeral namespace, created and destroyed per-run by the
+# operator/webhook-api (see gitops_shared/build_namespace_provisioner.py).
+#
+# Pre-creates all namespaces before "make deploy" so that resources deployed
+# to these namespaces have a target.
+#
+# Namespace creation lives ONLY here — the Helm chart has no `kind: Namespace`
+# template of its own. Re-run this file (or `make namespaces`) after a
+# `helm upgrade` if a new namespace was introduced; it is safe to re-apply.
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitops-core
+  labels:
+    app.kubernetes.io/managed-by: gitops-platform
+    app.kubernetes.io/part-of: gitops-platform
+    # Every pod template that runs here (operator/controller/webhook-api,
+    # the ephemeral-ns-sweep CronJob) already complies with restricted
+    # (non-root, no privilege escalation, capabilities dropped, seccomp) --
+    # enforcing it explicitly costs nothing and closes the gap where this
+    # namespace otherwise relied on whatever PSA level the cluster defaults
+    # to.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+
+---
+# tekton-pipelines hosts the Tekton controller only -- every pipeline run's
+# actual TaskRuns/PipelineRuns (including Kaniko's build-local step, which
+# needs runAsUser:0 for overlayfs layer extraction) execute in their own
+# fresh, ephemeral per-run namespace instead (see
+# gitops_shared/build_namespace_provisioner.py, labeled baseline there too --
+# runAsUser:0 is permitted under baseline, and no task anywhere uses
+# privileged containers, hostPath, or hostNetwork/hostPID/hostIPC). This
+# namespace hosting no app execution means it needs nothing more permissive
+# than baseline either.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tekton-pipelines
+  labels:
+    app.kubernetes.io/managed-by: gitops-platform
+    app.kubernetes.io/part-of: gitops-platform
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+
+---
+# gitops-tooling hosts third-party services:
+#   - SonarQube CE  (requires privileged initContainer for vm.max_map_count)
+#   - Sealed Secrets controller
+#
+# gitops-db hosts the platform database (PostgreSQL StatefulSet).
+# Separate namespace keeps DB infrastructure isolated from both the operator
+# and third-party tools, with its own NetworkPolicy.
+# The privileged pod-security labels are required by SonarQube's sysctl initContainer.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitops-tooling
+  labels:
+    app.kubernetes.io/managed-by: gitops-platform
+    app.kubernetes.io/part-of: gitops-platform
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/audit: privileged
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitops-db
+  labels:
+    app.kubernetes.io/managed-by: gitops-platform
+    app.kubernetes.io/part-of: gitops-platform
+    # NOT restricted -- the postgres:16 image's own entrypoint starts its
+    # init container as root by design (runAsUser:0, runAsNonRoot:false) and
+    # re-execs as postgres via gosu; restricted would block it from ever
+    # starting (see templates/db/statefulset.yaml for the full rationale).
+    # baseline is still real hardening over the cluster's undeclared default.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    app.kubernetes.io/managed-by: gitops-platform
+    app.kubernetes.io/part-of: gitops-platform
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    app.kubernetes.io/managed-by: gitops-platform
+    app.kubernetes.io/part-of: gitops-platform
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+  labels:
+    app.kubernetes.io/managed-by: gitops-platform
+    app.kubernetes.io/part-of: gitops-platform
+
+
+# NOTE: there is no static "gitops-image-builds" (or any other) app-pipeline
+# namespace here anymore. Every pipeline run now gets its own fresh,
+# ephemeral, PSA-baseline namespace -- created by
+# gitops_shared/build_namespace_provisioner.py at trigger time (labeled
+# gitops-platform.io/namespace-role=app-pipeline, same as this file's other
+# namespaces, so gitops-tooling's NetworkPolicy ingress rule still reaches
+# it) and deleted by gitops_shared/namespace_teardown.py once that run
+# finishes. tekton-pipelines itself hosts no app execution and stays PSA
+# baseline too (see its own namespace block above).

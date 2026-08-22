@@ -1,0 +1,106 @@
+# GitOps Platform — Installer ClusterRole
+#
+# This ClusterRole grants the minimum permissions needed to run "make deploy".
+# Bind it to whichever identity will run the install:
+#
+#   Option A — bind to a human user (AD, OIDC, or client-cert):
+#     kubectl create clusterrolebinding gitops-platform-installer \
+#       --clusterrole=gitops-platform-installer \
+#       --user=<your-username>
+#
+#   Option B — bind to the gitops-installer ServiceAccount (see 03-installer-sa.yaml):
+#     Already done by 03-installer-sa.yaml.
+#
+#   Option C — bind to a CI/CD service account in another namespace:
+#     kubectl create clusterrolebinding gitops-platform-installer \
+#       --clusterrole=gitops-platform-installer \
+#       --serviceaccount=<namespace>:<sa-name>
+#
+# If you already have cluster-admin you do not need this file —
+# cluster-admin is a superset of everything listed here.
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitops-platform-installer
+  labels:
+    app.kubernetes.io/managed-by: gitops-platform
+    app.kubernetes.io/component: installer
+rules:
+
+  # Namespaces — platform creates 6 namespaces at install time;
+  # per-app namespaces are created at onboard time
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+  # Core workload and config resources — operator, UI, SonarQube deployments;
+  # secrets for API token, registry credentials, AI keys;
+  # resource quotas and limit ranges for per-app namespaces
+  - apiGroups: [""]
+    resources:
+      - serviceaccounts
+      - configmaps
+      - secrets
+      - services
+      - persistentvolumeclaims
+      - pods
+      - events
+      - resourcequotas
+      - limitranges
+    verbs: ["*"]
+
+  # Deployments — operator, UI, SonarQube components
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["*"]
+
+  # Helm hook Jobs — pre-install (Tekton download) and post-install (task apply)
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["*"]
+
+  # RBAC — must be able to create the operator and pipeline-sa ClusterRoles/Bindings
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - clusterroles
+      - clusterrolebindings
+      - roles
+      - rolebindings
+    verbs: ["*"]
+
+  # CRDs — Tekton Pipelines, GitOpsPipeline CRDs
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["*"]
+
+  # Tekton resources — installed by Helm pre-install hook; tasks/pipelines applied
+  # by make apply-platform
+  - apiGroups: ["tekton.dev", "triggers.tekton.dev"]
+    resources: ["*"]
+    verbs: ["*"]
+
+  # GitOpsPipeline CRD — platform's own custom resource
+  - apiGroups: ["gitops-platform.io"]
+    resources: ["*"]
+    verbs: ["*"]
+
+  # Ingress — optional; needed if ui.ingress.enabled=true.
+  # NetworkPolicies — networkPolicy.enabled defaults to true in values.yaml,
+  # so the chart creates several by default on every install, not just when
+  # explicitly opted into (missing this made a non-cluster-admin install fail
+  # partway through with Forbidden on NetworkPolicy creation).
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "ingressclasses", "networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # StorageClass — read-only; installer verifies a default exists but does not modify
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+
+  # Pod disruption budgets — Tekton subchart may create these
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["*"]

@@ -306,7 +306,7 @@ For engineers who'd rather work from a terminal than a browser, `kgate` is a com
 | To do this | You need |
 |------------|----------|
 | Use `kgate` against an already-running platform (login, trigger, approve, logs, admin, ...) | Linux or macOS (curl-install below), or Windows (manual `.zip` — see below); outbound access to `github.com`/`raw.githubusercontent.com` to fetch the binary once; a platform account (ask your admin, or `kgate login` with your own UI credentials) |
-| `kgate install` — bootstrap the platform itself (alternative to Quick Install above) | A `kubeconfig` pointed at the target cluster with near-cluster-admin permissions (it creates namespaces, RBAC, CRDs, workloads); the `tekton-tasks.yaml` from this repo. **Current limitation:** it also needs `cluster-setup/01-namespaces.yaml` and `02-installer-rbac.yaml` from a `gitops-platform` source checkout, which isn't published standalone here — see the note below |
+| `kgate install` — bootstrap the platform itself (alternative to Quick Install above) | A `kubeconfig` pointed at the target cluster with near-cluster-admin permissions (it creates namespaces, RBAC, CRDs, workloads); `tekton-tasks.yaml` and the `cluster-setup/` folder from this repo (below) — **no `gitops-platform` source checkout needed** |
 | `kgate install --install-linkerd`, or image signing | the `linkerd` / `cosign` CLI on your `PATH` — both optional, silently skipped if absent |
 
 ### Install
@@ -333,16 +333,19 @@ kgate approve <run-id> --comment "LGTM"
 
 ### Bootstrapping the platform itself
 
-> **Use the [Quick Install](#quick-install) script above for a normal install** — it's the only path that's fully self-contained with nothing beyond this repo. `kgate install` is documented here for completeness, but currently has a real gap that will block most customers (see below).
-
-`kgate install` is a native-Go alternative to `customer-install.sh` — no `helm`/`kubectl` binary required — and it doubles as the upgrade command on a repeat run (reuses existing credentials, refuses real downgrades unless `--force-downgrade`, prunes Tekton tasks removed in a newer release). The Tekton CI tasks can be supplied standalone:
+`kgate install` is a native-Go alternative to `customer-install.sh` — no `helm`/`kubectl` binary required — and it doubles as the upgrade command on a repeat run (reuses existing credentials, refuses real downgrades unless `--force-downgrade`, prunes Tekton tasks removed in a newer release). Everything it needs is published in this repo, so no `gitops-platform` source checkout is required:
 
 ```bash
 curl -O https://raw.githubusercontent.com/k8secops/k8secops-script/main/tekton-tasks.yaml
+curl --create-dirs -o cluster-setup/01-namespaces.yaml \
+  https://raw.githubusercontent.com/k8secops/k8secops-script/main/cluster-setup/01-namespaces.yaml
+curl --create-dirs -o cluster-setup/02-installer-rbac.yaml \
+  https://raw.githubusercontent.com/k8secops/k8secops-script/main/cluster-setup/02-installer-rbac.yaml
+
 kgate install --yes --tekton-tasks-file ./tekton-tasks.yaml
 ```
 
-**However**, its first step (namespace + installer RBAC setup) still reads `cluster-setup/01-namespaces.yaml` and `cluster-setup/02-installer-rbac.yaml` from a `gitops-platform` source checkout (`--repo-root`, default: current directory) — those two files aren't published standalone in this repo yet, so `kgate install` will fail at Step 1 unless you have access to that checkout. Use the Quick Install script above instead; it needs nothing this repo doesn't already have.
+`kgate install` looks for `cluster-setup/` relative to the current directory by default (or pass `--repo-root <dir>` to point elsewhere) — as long as the three files above are laid out this way, it needs nothing else from this repo or `gitops-platform`.
 
 Always safe to preview first with `kgate install --dry-run` (validates against your live cluster, changes nothing).
 
