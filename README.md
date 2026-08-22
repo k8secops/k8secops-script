@@ -370,21 +370,32 @@ is only the *publish target*, not where the release is built.
 From a clean `gitops-platform/cli/` checkout with no uncommitted changes:
 
 ```sh
-git tag cli/v1.0.0 && git push origin cli/v1.0.0   # tag prefix is load-bearing
+# 1. Tag the release commit -- BOTH tags, same commit (see why below):
+git tag cli/v1.0.0 <commit>
+git tag -f v1.0.0 <commit>
+git push origin cli/v1.0.0
+git push --force origin v1.0.0
+
+# 2. Publish
 cd cli
 GITHUB_TOKEN=<token with write access to k8secops-script> \
   GORELEASER_CURRENT_TAG=v1.0.0 \
   goreleaser release --clean
 ```
 
-`GORELEASER_CURRENT_TAG` is not optional — without it, GoReleaser falls back
-to `git describe --tags`, which cannot parse the `cli/` prefix and can pick
-up an unrelated tag reachable elsewhere on `gitops-platform`'s history.
-**Use the bare version only (`v1.0.0`), not the full `cli/v1.0.0` git tag**
-— GoReleaser semver-parses this value directly and the `cli/` prefix isn't
-valid semver (confirmed live: `failed to parse tag 'cli/v1.0.0' as
-semver`). The git tag itself still needs the `cli/` prefix; only this env
-var doesn't.
+**Why both tags, same commit — confirmed by an actual failed release
+(2026-08-22), not theory:** `GORELEASER_CURRENT_TAG` must name a real git
+tag that (a) parses as semver — `cli/v1.0.0` doesn't, the prefix breaks it
+— **and** (b) points at the exact commit being released, or it fails with
+`git tag v1.0.0 was not made against commit ...`. `gitops-platform`
+already carries its own bare `v1.0.0` platform-release tag, almost always
+pointing at a *different* commit than whichever one the CLI is being
+released from, so condition (b) means re-pointing that tag too (`git tag
+-f`) — harmless, nothing reads what commit it points at, it's purely
+informational. `cli/.goreleaser.yml`'s `release.tag: "cli/{{ .Tag }}"`
+still ensures the actual published GitHub release lands under
+`cli/v1.0.0`, matching what `install-kgate.sh` expects — the bare tag is
+only needed internally.
 
 Until this has been run once, `curl ... | bash` above fails with
 `no published release found` — that's expected, not a bug.
