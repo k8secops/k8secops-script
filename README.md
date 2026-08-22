@@ -311,7 +311,7 @@ curl -sSL https://raw.githubusercontent.com/k8secops/k8secops-script/main/instal
 # https://github.com/k8secops/k8secops-script/releases and put kgate.exe on your PATH
 ```
 
-Pin a specific version with `KGATE_VERSION=vX.Y.Z bash install-kgate.sh`, or install somewhere that doesn't need `sudo` with `KGATE_INSTALL_DIR=$HOME/.local/bin bash install-kgate.sh`.
+Pin a specific version with `KGATE_VERSION=cli/vX.Y.Z bash install-kgate.sh` (the full release tag, including the `cli/` prefix — a plain `vX.Y.Z` will 404), or install somewhere that doesn't need `sudo` with `KGATE_INSTALL_DIR=$HOME/.local/bin bash install-kgate.sh`.
 
 ### Quick start
 

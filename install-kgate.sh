@@ -9,7 +9,7 @@
 #
 # Usage:
 #   curl -sSL https://raw.githubusercontent.com/k8secops/k8secops-script/main/install-kgate.sh | bash
-#   KGATE_VERSION=v1.2.3 bash install-kgate.sh   # pin a specific version
+#   KGATE_VERSION=cli/v1.2.3 bash install-kgate.sh   # pin a specific version (full tag, with the cli/ prefix)
 #   KGATE_INSTALL_DIR=$HOME/.local/bin bash install-kgate.sh   # no sudo needed
 set -euo pipefail
 
