@@ -349,6 +349,38 @@ kgate install --yes --tekton-tasks-file ./tekton-tasks.yaml
 
 Always safe to preview first with `kgate install --dry-run` (validates against your live cluster, changes nothing).
 
+### Releasing `kgate` (maintainers only)
+
+`install-kgate.sh` above only works once a release actually exists. Binaries
+are cross-compiled and published via [GoReleaser](https://goreleaser.com/),
+manually, from a `gitops-platform` checkout — this repo (`k8secops-script`)
+is only the *publish target*, not where the release is built.
+
+**Prerequisites (one-time per machine):**
+- A Go toolchain
+- `goreleaser` — `go install github.com/goreleaser/goreleaser/v2@latest`
+- A `GITHUB_TOKEN` with **write access to `k8secops-script` specifically**
+  (not just `gitops-platform`) — e.g. `gh auth login` then
+  `GITHUB_TOKEN=$(gh auth token)`
+
+From a clean `gitops-platform/cli/` checkout with no uncommitted changes:
+
+```sh
+git tag cli/v1.0.0 && git push origin cli/v1.0.0   # tag prefix is load-bearing
+cd cli
+GITHUB_TOKEN=<token with write access to k8secops-script> \
+  GORELEASER_CURRENT_TAG=cli/v1.0.0 \
+  goreleaser release --clean
+```
+
+`GORELEASER_CURRENT_TAG` is not optional — without it, GoReleaser falls back
+to `git describe --tags`, which cannot parse the `cli/` prefix and can pick
+up an unrelated tag reachable elsewhere on `gitops-platform`'s history.
+Always set it explicitly to the exact tag you just pushed.
+
+Until this has been run once, `curl ... | bash` above fails with
+`no published release found` — that's expected, not a bug.
+
 Full command reference: run `kgate --help` or `kgate <command> --help` — every command's flags, RBAC requirements, and behavior are documented inline in the binary itself.
 
 ---
