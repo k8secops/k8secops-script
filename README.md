@@ -297,6 +297,47 @@ Already pay for a licensed scanner (Coverity, Snyk, or an internal tool)? Admins
 
 ---
 
+## CLI (kgate)
+
+For engineers who'd rather work from a terminal than a browser, `kgate` is a companion CLI (Go, single static binary, kubectl-style command surface) that talks to the platform's REST API — enforcing the same per-app `admin`/`reviewer`/`user` roles as the web UI, nothing bypassed.
+
+### Install
+
+```bash
+# Linux/macOS -- no Go toolchain needed:
+curl -sSL https://raw.githubusercontent.com/k8secops/k8secops-script/main/install-kgate.sh | bash
+
+# Windows: download the .zip from
+# https://github.com/k8secops/k8secops-script/releases and put kgate.exe on your PATH
+```
+
+Pin a specific version with `KGATE_VERSION=vX.Y.Z bash install-kgate.sh`, or install somewhere that doesn't need `sudo` with `KGATE_INSTALL_DIR=$HOME/.local/bin bash install-kgate.sh`.
+
+### Quick start
+
+```bash
+kgate login --url http://localhost:8080
+kgate list                              # apps you can see
+kgate trigger my-service --branch main
+kgate wait <run-id> --for=status=AWAITING_HUMAN
+kgate approve <run-id> --comment "LGTM"
+```
+
+### Bootstrapping the platform itself
+
+`kgate install` is also a native-Go alternative to the Quick Install steps above — no `helm`/`kubectl` binary required. Use the `tekton-tasks.yaml` already in this repo so no `gitops-platform` source checkout is needed:
+
+```bash
+curl -O https://raw.githubusercontent.com/k8secops/k8secops-script/main/tekton-tasks.yaml
+kgate install --yes --tekton-tasks-file ./tekton-tasks.yaml
+```
+
+`kgate install` doubles as the upgrade command — re-run it against a newer `--chart-version` and it refuses a real downgrade unless you pass `--force-downgrade`. Always safe to preview first with `kgate install --dry-run`.
+
+Full command reference (every subcommand, the RBAC model, shell completion, troubleshooting) lives in [`docs/CLI.md`](https://github.com/k8secops/gitops-platform/blob/main/docs/CLI.md) in the main repo.
+
+---
+
 ## Uninstall
 
 ### Default — keeps PostgreSQL data
