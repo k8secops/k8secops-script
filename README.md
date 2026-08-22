@@ -361,8 +361,15 @@ manually, from a `gitops-platform` checkout — this repo (`k8secops-script`)
 is only the *publish target*, not where the release is built.
 
 **Prerequisites (one-time per machine):**
-- A Go toolchain
-- `goreleaser` — `go install github.com/goreleaser/goreleaser/v2@latest`
+- A Go toolchain — [go.dev/doc/install](https://go.dev/doc/install), or without
+  root/sudo:
+  ```sh
+  curl -sSL -o go.tar.gz https://go.dev/dl/go1.27.0.linux-amd64.tar.gz
+  mkdir -p ~/go-sdk && tar -C ~/go-sdk -xzf go.tar.gz && rm go.tar.gz
+  export PATH="$HOME/go-sdk/go/bin:$HOME/go/bin:$PATH"   # add to ~/.bashrc to persist
+  ```
+- `goreleaser` (needs Go from the step above first) —
+  `go install github.com/goreleaser/goreleaser/v2@latest`
 - A `GITHUB_TOKEN` with **write access to `k8secops-script` specifically**
   (not just `gitops-platform`) — e.g. `gh auth login` then
   `GITHUB_TOKEN=$(gh auth token)`
