@@ -323,7 +323,7 @@ curl -sSL https://raw.githubusercontent.com/k8secops/k8secops-script/main/instal
 # https://github.com/k8secops/k8secops-script/releases and put kgate.exe on your PATH
 ```
 
-Pin a specific version with `KGATE_VERSION=cli/vX.Y.Z bash install-kgate.sh` (the full release tag, including the `cli/` prefix — a plain `vX.Y.Z` will 404), or install somewhere that doesn't need `sudo` with `KGATE_INSTALL_DIR=$HOME/.local/bin bash install-kgate.sh`.
+Pin a specific version with `KGATE_VERSION=vX.Y.Z bash install-kgate.sh` (bare — the published release tag has no `cli/` prefix; see "Releasing" below for why), or install somewhere that doesn't need `sudo` with `KGATE_INSTALL_DIR=$HOME/.local/bin bash install-kgate.sh`.
 
 ### Quick start
 
@@ -392,10 +392,22 @@ already carries its own bare `v1.0.0` platform-release tag, almost always
 pointing at a *different* commit than whichever one the CLI is being
 released from, so condition (b) means re-pointing that tag too (`git tag
 -f`) — harmless, nothing reads what commit it points at, it's purely
-informational. `cli/.goreleaser.yml`'s `release.tag: "cli/{{ .Tag }}"`
-still ensures the actual published GitHub release lands under
-`cli/v1.0.0`, matching what `install-kgate.sh` expects — the bare tag is
-only needed internally.
+informational.
+
+**The published release itself lands under the bare `v1.0.0` tag** — a way
+to keep the `cli/` prefix on the published release turned out to be
+GoReleaser Pro-only too (confirmed live: `field tag not found in type
+config.Release` on the OSS build). `install-kgate.sh` expects a bare tag
+(it always did — an earlier pass of this README mistakenly required the
+`cli/` prefix; reverted). The `cli/v1.0.0` **local git tag** on
+`gitops-platform` still exists and still matters for Go module resolution
+— it's just unrelated to what the release publishes under.
+
+**Known quirk, not a bug**: the bare `v1.0.0` tag on this repo is the same
+name already used for chart/Tekton-tasks versioning (`customer-install.sh`'s
+`TEKTON_TASKS_URL`) — safe, since a GitHub release just attaches to
+whichever commit the tag already points to here, it doesn't move it, but
+one tag name now means two different things in this repo.
 
 Until this has been run once, `curl ... | bash` above fails with
 `no published release found` — that's expected, not a bug.
