@@ -6,6 +6,10 @@ A cloud-agnostic, Kubernetes-native CI system with 30+ security scanners, AI-pow
 
 ## Quick Install
 
+> **Before you start**, you'll need `kubectl` 1.28+ and `helm` 3.12+ already installed and
+> pointed at your target cluster (8 GB RAM / 4 CPUs minimum) — full details in
+> [Prerequisites](#prerequisites) below.
+
 > **The installer is interactive** — it asks a few questions before touching your cluster.  
 > Download and run it (do not pipe directly to bash):
 
