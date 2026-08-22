@@ -299,14 +299,14 @@ Already pay for a licensed scanner (Coverity, Snyk, or an internal tool)? Admins
 
 ## CLI (kgate)
 
-For engineers who'd rather work from a terminal than a browser, `kgate` is a companion CLI (Go, single static binary, kubectl-style command surface) that talks to the platform's REST API — enforcing the same per-app `admin`/`reviewer`/`user` roles as the web UI, nothing bypassed.
+`kgate` is a companion CLI (Go, single static binary, kubectl-style command surface) that does **two** distinct jobs: it can **install or upgrade the platform itself** (`kgate install` — a native-Go alternative to the Quick Install script above, no `helm`/`kubectl` binary needed), and once a platform is running, it's a full day-to-day **client** for it (login, trigger, approve, logs, admin, ...) — enforcing the same per-app `admin`/`reviewer`/`user` roles as the web UI, nothing bypassed.
 
 ### Prerequisites
 
 | To do this | You need |
 |------------|----------|
-| Use `kgate` against an already-running platform (login, trigger, approve, logs, admin, ...) | Linux or macOS (curl-install below), or Windows (manual `.zip` — see below); outbound access to `github.com`/`raw.githubusercontent.com` to fetch the binary once; a platform account (ask your admin, or `kgate login` with your own UI credentials) |
-| `kgate install` — bootstrap the platform itself (alternative to Quick Install above) | A `kubeconfig` pointed at the target cluster with near-cluster-admin permissions (it creates namespaces, RBAC, CRDs, workloads); `tekton-tasks.yaml` and the `cluster-setup/` folder from this repo (below) — **no `gitops-platform` source checkout needed** |
+| `kgate install` — install or upgrade the platform itself | A `kubeconfig` pointed at the target cluster with near-cluster-admin permissions (it creates namespaces, RBAC, CRDs, workloads); `tekton-tasks.yaml` and the `cluster-setup/` folder from this repo (below) — **no `gitops-platform` source checkout needed** |
+| Use `kgate` as a day-to-day client against a platform that's already installed (login, trigger, approve, logs, admin, ...) | Linux or macOS (curl-install below), or Windows (manual `.zip` — see below); outbound access to `github.com`/`raw.githubusercontent.com` to fetch the binary once; a platform account (ask your admin, or `kgate login` with your own UI credentials) |
 | `kgate install --install-linkerd`, or image signing | the `linkerd` / `cosign` CLI on your `PATH` — both optional, silently skipped if absent |
 
 ### Install
