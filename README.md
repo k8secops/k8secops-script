@@ -373,14 +373,18 @@ From a clean `gitops-platform/cli/` checkout with no uncommitted changes:
 git tag cli/v1.0.0 && git push origin cli/v1.0.0   # tag prefix is load-bearing
 cd cli
 GITHUB_TOKEN=<token with write access to k8secops-script> \
-  GORELEASER_CURRENT_TAG=cli/v1.0.0 \
+  GORELEASER_CURRENT_TAG=v1.0.0 \
   goreleaser release --clean
 ```
 
 `GORELEASER_CURRENT_TAG` is not optional — without it, GoReleaser falls back
 to `git describe --tags`, which cannot parse the `cli/` prefix and can pick
 up an unrelated tag reachable elsewhere on `gitops-platform`'s history.
-Always set it explicitly to the exact tag you just pushed.
+**Use the bare version only (`v1.0.0`), not the full `cli/v1.0.0` git tag**
+— GoReleaser semver-parses this value directly and the `cli/` prefix isn't
+valid semver (confirmed live: `failed to parse tag 'cli/v1.0.0' as
+semver`). The git tag itself still needs the `cli/` prefix; only this env
+var doesn't.
 
 Until this has been run once, `curl ... | bash` above fails with
 `no published release found` — that's expected, not a bug.
