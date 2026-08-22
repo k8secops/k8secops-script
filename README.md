@@ -335,6 +335,21 @@ kgate wait <run-id> --for=status=AWAITING_HUMAN
 kgate approve <run-id> --comment "LGTM"
 ```
 
+### `kgate doctor` — check readiness before you install
+
+Before downloading anything else, run:
+
+```bash
+kgate doctor
+```
+
+A read-only check of whether your cluster is ready — reachability, the
+same permissions the installer needs, a working StorageClass, enough
+CPU/RAM, and outbound network access to the OCI registry and GitHub. Never
+creates or changes anything, so it's safe to run against any cluster,
+including production. Catches a missing permission or blocked network path
+immediately instead of partway through a real install.
+
 ### Bootstrapping the platform itself
 
 `kgate install` is a native-Go alternative to `customer-install.sh` — no `helm`/`kubectl` binary required — and it doubles as the upgrade command on a repeat run (reuses existing credentials, refuses real downgrades unless `--force-downgrade`, prunes Tekton tasks removed in a newer release). Everything it needs is published in this repo, so no `gitops-platform` source checkout is required:
