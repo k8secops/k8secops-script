@@ -49,8 +49,14 @@ resolve_version() {
   local resolved
   resolved="$(curl -fsSL -o /dev/null -w '%{url_effective}' "$latest_url")" \
     || fail "could not resolve the latest release -- check network access to github.com, or set KGATE_VERSION=cli/vX.Y.Z"
-  # $resolved is now .../releases/tag/cli/vX.Y.Z
-  echo "${resolved##*/tag/}"
+  # $resolved is now .../releases/tag/cli/vX.Y.Z -- but if zero releases
+  # have been published yet, GitHub redirects /releases/latest -> /releases
+  # (a 200 OK listing page, not an error), so guard explicitly rather than
+  # silently using that un-stripped URL as a "version".
+  case "$resolved" in
+    */tag/*) echo "${resolved##*/tag/}" ;;
+    *) fail "no published release found at https://github.com/${REPO}/releases -- set KGATE_VERSION=cli/vX.Y.Z to pin one, or check back after a release is published" ;;
+  esac
 }
 
 main() {
