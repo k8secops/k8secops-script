@@ -431,6 +431,31 @@ name already used for chart/Tekton-tasks versioning (`customer-install.sh`'s
 whichever commit the tag already points to here, it doesn't move it, but
 one tag name now means two different things in this repo.
 
+**Mandatory: verify the actual published binary before considering a
+release done.** Confirmed live (2026-08-22): a release published with zero
+errors, `kgate version` printed correctly, but the binary still ran
+old, pre-fix logic — a stale Go build cache from an earlier release
+attempt in the same session defeated GoReleaser's cross-compile (`go
+build` run separately, right before, showed correct behavior the whole
+time — the problem was specific to GoReleaser's own build step, never
+fully root-caused beyond that). After every real release:
+
+```sh
+go clean -cache   # before every real release, not just when something looks wrong
+curl -sSL -o /tmp/kgate_verify.tar.gz \
+  https://github.com/k8secops/k8secops-script/releases/download/vX.Y.Z/kgate_linux_amd64.tar.gz
+tar -xzf /tmp/kgate_verify.tar.gz -C /tmp kgate
+/tmp/kgate version
+```
+
+If it shows stale behavior, delete the bad release
+(`gh release delete vX.Y.Z --repo k8secops/k8secops-script --yes` — this
+removes the GitHub Release and its assets, not the git tag) and re-run
+`go clean -cache` + the release. This is exactly what happened the first
+time `v1.0.0` was published — caught only because a real install still
+failed afterward, not because the release process itself reported
+anything wrong.
+
 Until this has been run once, `curl ... | bash` above fails with
 `no published release found` — that's expected, not a bug.
 
