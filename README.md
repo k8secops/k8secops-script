@@ -301,6 +301,14 @@ Already pay for a licensed scanner (Coverity, Snyk, or an internal tool)? Admins
 
 For engineers who'd rather work from a terminal than a browser, `kgate` is a companion CLI (Go, single static binary, kubectl-style command surface) that talks to the platform's REST API — enforcing the same per-app `admin`/`reviewer`/`user` roles as the web UI, nothing bypassed.
 
+### Prerequisites
+
+| To do this | You need |
+|------------|----------|
+| Use `kgate` against an already-running platform (login, trigger, approve, logs, admin, ...) | Linux or macOS (curl-install below), or Windows (manual `.zip` — see below); outbound access to `github.com`/`raw.githubusercontent.com` to fetch the binary once; a platform account (ask your admin, or `kgate login` with your own UI credentials) |
+| `kgate install` — bootstrap the platform itself (alternative to Quick Install above) | A `kubeconfig` pointed at the target cluster with near-cluster-admin permissions (it creates namespaces, RBAC, CRDs, workloads); the `tekton-tasks.yaml` from this repo. **Current limitation:** it also needs `cluster-setup/01-namespaces.yaml` and `02-installer-rbac.yaml` from a `gitops-platform` source checkout, which isn't published standalone here — see the note below |
+| `kgate install --install-linkerd`, or image signing | the `linkerd` / `cosign` CLI on your `PATH` — both optional, silently skipped if absent |
+
 ### Install
 
 ```bash
@@ -325,16 +333,20 @@ kgate approve <run-id> --comment "LGTM"
 
 ### Bootstrapping the platform itself
 
-`kgate install` is also a native-Go alternative to the Quick Install steps above — no `helm`/`kubectl` binary required. Use the `tekton-tasks.yaml` already in this repo so no `gitops-platform` source checkout is needed:
+> **Use the [Quick Install](#quick-install) script above for a normal install** — it's the only path that's fully self-contained with nothing beyond this repo. `kgate install` is documented here for completeness, but currently has a real gap that will block most customers (see below).
+
+`kgate install` is a native-Go alternative to `customer-install.sh` — no `helm`/`kubectl` binary required — and it doubles as the upgrade command on a repeat run (reuses existing credentials, refuses real downgrades unless `--force-downgrade`, prunes Tekton tasks removed in a newer release). The Tekton CI tasks can be supplied standalone:
 
 ```bash
 curl -O https://raw.githubusercontent.com/k8secops/k8secops-script/main/tekton-tasks.yaml
 kgate install --yes --tekton-tasks-file ./tekton-tasks.yaml
 ```
 
-`kgate install` doubles as the upgrade command — re-run it against a newer `--chart-version` and it refuses a real downgrade unless you pass `--force-downgrade`. Always safe to preview first with `kgate install --dry-run`.
+**However**, its first step (namespace + installer RBAC setup) still reads `cluster-setup/01-namespaces.yaml` and `cluster-setup/02-installer-rbac.yaml` from a `gitops-platform` source checkout (`--repo-root`, default: current directory) — those two files aren't published standalone in this repo yet, so `kgate install` will fail at Step 1 unless you have access to that checkout. Use the Quick Install script above instead; it needs nothing this repo doesn't already have.
 
-Full command reference (every subcommand, the RBAC model, shell completion, troubleshooting) lives in [`docs/CLI.md`](https://github.com/k8secops/gitops-platform/blob/main/docs/CLI.md) in the main repo.
+Always safe to preview first with `kgate install --dry-run` (validates against your live cluster, changes nothing).
+
+Full command reference: run `kgate --help` or `kgate <command> --help` — every command's flags, RBAC requirements, and behavior are documented inline in the binary itself.
 
 ---
 
